@@ -1,0 +1,21 @@
+{
+  "listenAddr": ":8443",
+  "tls": { "certFile": "", "keyFile": "" },
+
+  "clients": [
+    { "id": "algo-desk-1", "apiKeySha256": "<output of: proxy keygen>" }
+  ],
+
+  "session": {
+    "idleTimeoutMinutes": 60,
+    "maxLifetimeHours": 24,
+    "maxPerClient": 10,
+    "replayBuffer": 1000
+  },
+
+  "dhan": {
+    "baseURL": "https://api.dhan.co/v2",
+    "orderFeedURL": "wss://api-order-update.dhan.co",
+    "ordersPerSecond": 10
+  }
+}
