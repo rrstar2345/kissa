@@ -23,6 +23,25 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Async runtime / networking (ported from kstocks_egui)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12", features = ["json", "cookies"] }
+tokio-tungstenite = { version = "0.29.0", features = ["native-tls"] }
+futures = "0.3"
+urlencoding = "2.1"
+
+# Utilities
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+
+# Local storage: SQLite for accounts / orders / prefs, OS keychain for secrets
+sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "chrono"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

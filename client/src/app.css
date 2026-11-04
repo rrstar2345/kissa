@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+/* All theming lives in this file. DaisyUI supplies components; the two
+   themes below define the palette (green = up / red = down via
+   success / error). Add more themes here and list them in lib/theme.svelte.ts. */
+@plugin "daisyui" {
+  themes: false;
+  logs: false;
+}
+
+@plugin "daisyui/theme" {
+  name: "kissa-dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(21% 0.02 262);
+  --color-base-200: oklch(17.5% 0.02 262);
+  --color-base-300: oklch(14% 0.02 262);
+  --color-base-content: oklch(91% 0.01 262);
+  --color-primary: oklch(72% 0.15 252);
+  --color-primary-content: oklch(16% 0.03 262);
+  --color-secondary: oklch(70% 0.13 300);
+  --color-secondary-content: oklch(16% 0.03 300);
+  --color-accent: oklch(78% 0.14 195);
+  --color-accent-content: oklch(16% 0.03 195);
+  --color-neutral: oklch(28% 0.02 262);
+  --color-neutral-content: oklch(88% 0.01 262);
+  --color-info: oklch(74% 0.13 235);
+  --color-info-content: oklch(16% 0.03 235);
+  --color-success: oklch(77% 0.17 152);
+  --color-success-content: oklch(16% 0.04 152);
+  --color-warning: oklch(83% 0.15 85);
+  --color-warning-content: oklch(20% 0.04 85);
+  --color-error: oklch(68% 0.2 22);
+  --color-error-content: oklch(16% 0.04 22);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "kissa-light";
+  default: false;
+  prefersdark: false;
+  color-scheme: light;
+  --color-base-100: oklch(100% 0 0);
+  --color-base-200: oklch(97.5% 0.004 262);
+  --color-base-300: oklch(93% 0.008 262);
+  --color-base-content: oklch(25% 0.02 262);
+  --color-primary: oklch(54% 0.2 262);
+  --color-primary-content: oklch(98% 0.01 262);
+  --color-secondary: oklch(52% 0.18 300);
+  --color-secondary-content: oklch(98% 0.01 300);
+  --color-accent: oklch(58% 0.12 195);
+  --color-accent-content: oklch(98% 0.01 195);
+  --color-neutral: oklch(32% 0.02 262);
+  --color-neutral-content: oklch(96% 0.005 262);
+  --color-info: oklch(60% 0.15 235);
+  --color-info-content: oklch(98% 0.01 235);
+  --color-success: oklch(56% 0.16 152);
+  --color-success-content: oklch(98% 0.01 152);
+  --color-warning: oklch(75% 0.16 80);
+  --color-warning-content: oklch(22% 0.04 80);
+  --color-error: oklch(57% 0.21 25);
+  --color-error-content: oklch(98% 0.01 25);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .num {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .up {
+    color: var(--color-success);
+  }
+  .down {
+    color: var(--color-error);
+  }
+
+  /* ---- option chain table ---- */
+  .chain-wrap {
+    overflow: auto;
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
+    background: var(--color-base-100);
+  }
+  .chain {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
+    font-size: 0.78rem;
+  }
+  .chain th {
+    position: sticky;
+    z-index: 2;
+    background: var(--color-base-200);
+    color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 0.68rem;
+    padding: 0.4rem 0.55rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .chain thead tr:first-child th {
+    top: 0;
+    text-align: center;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+  }
+  .chain thead tr:nth-child(2) th {
+    top: 1.9rem;
+    border-bottom: 1px solid var(--color-base-300);
+  }
+  .chain td {
+    padding: 0.28rem 0.55rem;
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: 1px solid color-mix(in oklab, var(--color-base-300) 55%, transparent);
+    position: relative;
+  }
+  .chain .strike {
+    text-align: center;
+    font-weight: 700;
+    background: var(--color-base-200);
+    border-left: 1px solid var(--color-base-300);
+    border-right: 1px solid var(--color-base-300);
+  }
+  .chain tr.atm td {
+    border-top: 1px solid var(--color-primary);
+    border-bottom: 1px solid var(--color-primary);
+  }
+  .chain tr.atm .strike {
+    background: var(--color-primary);
+    color: var(--color-primary-content);
+  }
+  .chain td.itm {
+    background-color: color-mix(in oklab, var(--color-warning) 7%, transparent);
+  }
+  .chain tbody tr:hover td:not(.strike) {
+    background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
+  }
+  .chain td.oi-cell {
+    background-repeat: no-repeat;
+    background-size: var(--bar, 0%) 78%;
+    background-position: right center;
+  }
+  .chain td.oi-ce {
+    background-image: linear-gradient(color-mix(in oklab, var(--color-error) 28%, transparent), color-mix(in oklab, var(--color-error) 28%, transparent));
+  }
+  .chain td.oi-pe {
+    background-image: linear-gradient(color-mix(in oklab, var(--color-success) 28%, transparent), color-mix(in oklab, var(--color-success) 28%, transparent));
+    background-position: left center;
+  }
+  .flash-up {
+    animation: flash-up 0.7s ease-out;
+  }
+  .flash-down {
+    animation: flash-down 0.7s ease-out;
+  }
+  @keyframes flash-up {
+    from { background-color: color-mix(in oklab, var(--color-success) 45%, transparent); }
+  }
+  @keyframes flash-down {
+    from { background-color: color-mix(in oklab, var(--color-error) 45%, transparent); }
+  }
+}

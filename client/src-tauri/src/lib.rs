@@ -1,14 +1,96 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+mod accounts;
+mod chain;
+mod commands;
+mod db;
+mod market;
+mod secrets;
+mod settings;
+mod state;
+mod stats;
+
+use std::sync::Arc;
+use tauri::{Emitter, Manager};
+use tokio::sync::{Mutex, RwLock};
+use tracing::{error, info};
+
+use market::events::{new_index_store, IndexSink, IndexTick};
+use market::{market_clock, streamers};
+use state::{AppState, SharedState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "kissa_lib=info".into()),
+        )
+        .init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .setup(|app| {
+            let paths = settings::setup_app_folders()?;
+            let config = settings::load_or_create_config(&paths)?;
+            info!("App root: {}", paths.root.display());
+
+            let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
+            let state: SharedState = Arc::new(AppState {
+                config: config.clone(),
+                db: pool,
+                stats: stats::new_shared_stats(),
+                session: market_clock::new_shared_session_state(),
+                indices: new_index_store(),
+                fno: RwLock::new(Vec::new()),
+                chain: Mutex::new(None),
+            });
+            app.manage(state.clone());
+
+            // Market-clock supervisor: keeps NSE time offset fresh and flips
+            // the shared session between Active and Idle.
+            let (cfg, session) = (config.clone(), state.session.clone());
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    market_clock::refresh_if_stale(&cfg).await;
+                    session.tick(cfg.market_runtime.inactive_switch_after_secs).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            });
+
+            // Index streamer: always on; feeds the header ticker and gives
+            // the chain engine its underlying price.
+            let handle = app.handle().clone();
+            let store = state.indices.clone();
+            let sink: IndexSink = Arc::new(move |tick: IndexTick| {
+                if let Ok(mut m) = store.write() {
+                    m.insert(tick.index_name.clone(), tick.clone());
+                }
+                let _ = handle.emit("index-tick", &tick);
+            });
+            tauri::async_runtime::spawn(streamers::indices::run(
+                config,
+                state.stats.clone(),
+                state.session.clone(),
+                sink,
+            ));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::market_status,
+            commands::indices_snapshot,
+            commands::list_fno_symbols,
+            commands::list_expiries,
+            commands::start_chain,
+            commands::stop_chain,
+            commands::get_setting,
+            commands::set_setting,
+            commands::list_accounts,
+            commands::save_account,
+            commands::delete_account,
+            commands::test_account,
+        ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            error!("error while running tauri application: {e}");
+            std::process::exit(1);
+        });
 }

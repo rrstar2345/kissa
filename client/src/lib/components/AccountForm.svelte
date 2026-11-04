@@ -1,0 +1,158 @@
+<script lang="ts">
+  import { api } from '$lib/api';
+  import type { Account, AccountKind } from '$lib/types';
+
+  let {
+    kind,
+    account = null,
+    proxies,
+    onsaved,
+    oncancel
+  }: {
+    kind: AccountKind;
+    account?: Account | null;
+    proxies: Account[];
+    onsaved: () => void;
+    oncancel: () => void;
+  } = $props();
+
+  // Form is re-created per account via {#key}, so seeding from props once is intended.
+  // svelte-ignore state_referenced_locally
+  const m = account?.meta ?? {};
+  // svelte-ignore state_referenced_locally
+  let name = $state(account?.name ?? '');
+  // svelte-ignore state_referenced_locally
+  let meta = $state<Record<string, any>>({
+    startingCapital: m.startingCapital ?? 1000000,
+    brokeragePerOrder: m.brokeragePerOrder ?? 20,
+    clientId: m.clientId ?? '',
+    proxyId: m.proxyId ?? proxies[0]?.id ?? '',
+    baseUrl: m.baseUrl ?? '',
+    staticIp: m.staticIp ?? '',
+    notes: m.notes ?? '',
+    appId: m.appId ?? ''
+  });
+  let secret = $state('');
+  let saving = $state(false);
+  let error = $state('');
+
+  const secretField = $derived(kind === 'proxy' ? 'apiKey' : 'accessToken');
+  const secretLabel = $derived(kind === 'proxy' ? 'API key' : 'Access token');
+  const hasSecret = $derived(account?.secretsSet.includes(secretField) ?? false);
+  const titles = { paper: 'Paper account', dhan: 'Dhan account', proxy: 'Broker-proxy', fyers: 'Fyers data (API)' };
+
+  function pickMeta(): Record<string, any> {
+    switch (kind) {
+      case 'paper':
+        return {
+          startingCapital: Number(meta.startingCapital) || 0,
+          brokeragePerOrder: Number(meta.brokeragePerOrder) || 0
+        };
+      case 'dhan':
+        return { clientId: meta.clientId, proxyId: meta.proxyId };
+      case 'proxy':
+        return { baseUrl: meta.baseUrl, staticIp: meta.staticIp, notes: meta.notes };
+      case 'fyers':
+        return { appId: meta.appId };
+    }
+  }
+
+  async function submit(e: Event) {
+    e.preventDefault();
+    saving = true;
+    error = '';
+    try {
+      await api.saveAccount({
+        id: account?.id,
+        kind,
+        name,
+        meta: pickMeta(),
+        secrets: secret ? { [secretField]: secret } : {}
+      });
+      onsaved();
+    } catch (err) {
+      error = String(err);
+    } finally {
+      saving = false;
+    }
+  }
+</script>
+
+<form class="flex flex-col gap-3" onsubmit={submit}>
+  <h3 class="text-lg font-bold">{account ? 'Edit' : 'Add'} {titles[kind]}</h3>
+
+  <label class="form-control">
+    <span class="label-text mb-1 text-sm">Name</span>
+    <input class="input input-sm w-full" bind:value={name} required placeholder="e.g. My Dhan" />
+  </label>
+
+  {#if kind === 'paper'}
+    <div class="grid grid-cols-2 gap-3">
+      <label class="form-control">
+        <span class="label-text mb-1 text-sm">Starting capital (₹)</span>
+        <input type="number" min="0" class="input input-sm w-full" bind:value={meta.startingCapital} />
+      </label>
+      <label class="form-control">
+        <span class="label-text mb-1 text-sm">Brokerage per order (₹)</span>
+        <input type="number" min="0" class="input input-sm w-full" bind:value={meta.brokeragePerOrder} />
+      </label>
+    </div>
+  {:else if kind === 'proxy'}
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">Proxy URL</span>
+      <input class="input input-sm w-full" bind:value={meta.baseUrl} placeholder="https://proxy.example.com:8443" required />
+    </label>
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">Static IP (whitelisted with the broker)</span>
+      <input class="input input-sm w-full" bind:value={meta.staticIp} placeholder="203.0.113.10" />
+    </label>
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">Notes</span>
+      <input class="input input-sm w-full" bind:value={meta.notes} placeholder="e.g. Oracle Cloud, Mumbai" />
+    </label>
+  {:else if kind === 'dhan'}
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">Dhan client ID</span>
+      <input class="input input-sm w-full" bind:value={meta.clientId} required />
+    </label>
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">Route orders via</span>
+      <select class="select select-sm w-full" bind:value={meta.proxyId} required>
+        {#each proxies as p}<option value={p.id}>{p.name}</option>{/each}
+      </select>
+      {#if !proxies.length}
+        <span class="mt-1 text-xs text-warning">Add a broker-proxy first.</span>
+      {/if}
+    </label>
+  {:else if kind === 'fyers'}
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">App ID</span>
+      <input class="input input-sm w-full" bind:value={meta.appId} placeholder="XXXXXXXXXX-100" required />
+    </label>
+  {/if}
+
+  {#if kind !== 'paper'}
+    <label class="form-control">
+      <span class="label-text mb-1 text-sm">{secretLabel}</span>
+      <input
+        type="password"
+        autocomplete="off"
+        class="input input-sm w-full"
+        bind:value={secret}
+        placeholder={hasSecret ? '•••••••• saved in OS keychain (leave blank to keep)' : ''}
+        required={!hasSecret}
+      />
+      <span class="mt-1 text-xs text-base-content/50">Stored in your OS keychain only; never shown again.</span>
+    </label>
+  {/if}
+
+  {#if error}<div class="alert alert-error alert-soft py-2 text-sm">{error}</div>{/if}
+
+  <div class="modal-action mt-1">
+    <button type="button" class="btn btn-ghost btn-sm" onclick={oncancel}>Cancel</button>
+    <button class="btn btn-primary btn-sm" disabled={saving}>
+      {#if saving}<span class="loading loading-spinner loading-xs"></span>{/if}
+      Save
+    </button>
+  </div>
+</form>
