@@ -219,7 +219,7 @@ async fn stream_active(
     let url = build_ws_url(config, symbol, expiry);
     info!("Connecting options stream [{}] -> {} (active mode)", stream_key, url);
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
+    let ws_stream = crate::market::http::connect_nse_ws(&url, true)
         .await
         .map_err(|e| anyhow!("WebSocket connection failed for {}: {}", stream_key, e))?;
 
@@ -278,7 +278,7 @@ async fn poll_once(
 ) -> Result<()> {
     let url = build_ws_url(config, symbol, expiry);
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
+    let ws_stream = crate::market::http::connect_nse_ws(&url, true)
         .await
         .map_err(|e| anyhow!("WebSocket connection failed for {} (idle poll): {}", stream_key, e))?;
 

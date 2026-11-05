@@ -98,11 +98,8 @@ pub fn cookie_header_for(url: &str) -> Result<String> {
 /// Connect to an NSE streamer WSS endpoint.
 ///
 /// `with_browser_headers` controls whether `Origin`/`Referer`/`User-Agent`
-/// (and, if available, a `Cookie` from a best-effort session warmup against
-/// `https://www.nseindia.com`) are attached to the WS upgrade. Pass `true`
-/// only for endpoints confirmed to need it (currently: indices) — the
-/// options endpoint was working with a bare connect before, so it keeps
-/// that exact behavior (`false`) to avoid regressing it.
+/// and the warmed `Cookie` are attached to the WS upgrade. Both the indices
+/// and options streams need it (options returned 403 without).
 ///
 /// Cookie warmup/lookup is always best-effort: failures (network error, no
 /// cookies set, host-scoped cookie mismatch between `www.nseindia.com` and
@@ -120,7 +117,9 @@ pub async fn connect_nse_ws(
         if let Err(e) = warm_nse_session().await {
             warn!("NSE session warmup failed, connecting without cookies: {}", e);
         }
-        let cookie = cookie_header_for(url).ok();
+        // Cookies are host-scoped to www.nseindia.com, so look them up there
+        // rather than on the streamer.nseindia.com URL (which would be empty).
+        let cookie = cookie_header_for(NSE_ORIGIN).ok();
 
         let headers = request.headers_mut();
         headers.insert(
