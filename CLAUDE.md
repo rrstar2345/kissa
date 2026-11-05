@@ -23,7 +23,7 @@ Decisions made: phased build; secrets in OS keychain (`keyring`), everything els
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Foundation, Accounts, Option chain | Done (compiles, 5 unit tests pass, frontend builds; **never run live**) |
-| 2 | Charts + tick/OHLC storage + indicators | TODO |
+| 2 | Charts + OHLC storage + indicators + Fyers backfill | Written, **not compiled or run** (no Rust in sandbox); see Phase 2 notes |
 | 3 | Orders + Dashboard/diary | TODO |
 
 ## Phase 1 architecture (client/)
@@ -46,7 +46,10 @@ Backend `src-tauri/src/`:
 
 **kstocks_egui reusable for phase 2**: `storage/ticks.rs` (batched tick writers), `storage/ohlc.rs` (1m aggregation + daily rollup loops), `storage/retention.rs`, `storage/backfill.rs` (gap-fill from an old server API; probably not needed), `storage/db.rs` (index_ticks/option_ticks/ohlc schemas), `storage/watchlists.rs`, `storage/paper_trades.rs`, `gui/paper.rs`. NSE option WS message fields: `strikePrice, expiryDates, CE/PE{lastPrice, change, openInterest, totalTradedVolume, buyPrice1, sellPrice1}`, `flag:"HEARTBEAT"` off-hours.
 
-## Phase 2 plan (charts), proposed, confirm with user first
+## Phase 2 notes (as built)
+Decisions: persist indices + option strikes within ±20 of ATM of the streamed chain; Fyers backfill included; full indicator set. Deviation from the plan: no raw tick tables; ticks are folded into 1m bars in memory (`charts/recorder.rs`) and upserted to one `bars(instrument, tf, ts)` table (`charts/store.rs`). Instrument keys: `IDX:NIFTY 50`, `OPT:NIFTY:2026-11-24:24000:CE`. Other modules: `charts/{resample,indicators,backfill,instrument}.rs`; commands `get_chart, list_chart_instruments, backfill_chart`; event `bar-update`; frontend `routes/charts`, `lib/components/{ChartPanel,InstrumentPicker}.svelte`, `lib/charts.ts`; settings key `charts.layout`; config section `charts` + `fyers.history_url` in settings.json. Unverified: Fyers history URL/`oi_flag`, Fyers option symbol formats (weekly vs monthly guess), daily-candle timestamps (normalised to IST day), lightweight-charts pane APIs at runtime. Also fixed: options WSS 403 (now uses the cookie-warmed `connect_nse_ws`).
+
+## Phase 2 plan (original proposal)
 1. Port tick persistence + 1m/daily OHLC aggregation + retention into the client (SQLite via sqlx). Hook it to the index sink and to the option engine (currently nothing is persisted).
 2. Tauri commands to fetch bars (index and option strike CE/PE, with interval resampling); optional Fyers historical backfill.
 3. Indicators in Rust (EMA/SMA, RSI, MACD, Bollinger, VWAP, Supertrend) returning series plus buy/sell signal markers; keep the module pluggable.
