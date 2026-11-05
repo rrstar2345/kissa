@@ -2,6 +2,7 @@
 
 use chrono::NaiveDate;
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::unbounded_channel;
@@ -10,9 +11,11 @@ use tokio::task::JoinHandle;
 use super::engine::ChainEngine;
 use super::fyers::{self, FyersCreds};
 use super::ExpiryItem;
+use crate::charts::instrument::option_key;
+use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
 use crate::market::streamers::options;
-use crate::market::market_clock::SharedSessionState;
+use crate::market::market_clock::{self, SharedSessionState};
 use crate::settings::AppConfig;
 use crate::stats::SharedStats;
 
@@ -62,6 +65,7 @@ pub fn spawn_nse(
     stats: SharedStats,
     session: SharedSessionState,
     store: IndexStore,
+    recorder: Arc<Recorder>,
     symbol: String,
     expiry: ExpiryItem,
     index_names: Vec<String>,
@@ -80,14 +84,33 @@ pub fn spawn_nse(
     ));
 
     let engine_task = tokio::spawn(async move {
-        let mut engine = ChainEngine::new(symbol, expiry.label.clone(), date, cfg.risk_free_rate);
+        let mut engine = ChainEngine::new(symbol.clone(), expiry.label.clone(), date, cfg.risk_free_rate);
         let mut ticker = tokio::time::interval(Duration::from_millis(300));
+        // Strikes near ATM whose ticks are stored for charts.
+        let mut window: Option<(f64, f64)> = None;
+        let each_side = cfg.charts.persist_strikes_each_side;
         loop {
             tokio::select! {
-                Some(t) = rx.recv() => engine.apply(t),
+                Some(t) = rx.recv() => {
+                    if let Some((lo, hi)) = window {
+                        if t.strike >= lo - 1e-6 && t.strike <= hi + 1e-6 {
+                            let now = market_clock::get_ist_now().timestamp();
+                            for (is_call, leg) in [(true, &t.ce), (false, &t.pe)] {
+                                if let Some(px) = leg.ltp {
+                                    recorder.record(
+                                        &option_key(&symbol, &expiry.date, t.strike, is_call),
+                                        now, px, leg.volume, leg.oi,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    engine.apply(t)
+                }
                 _ = ticker.tick() => {
                     if engine.is_empty() { continue; }
                     let spot = find_index(&store, &index_names);
+                    window = spot.as_ref().and_then(|s| engine.strike_window(s.current_price, each_side));
                     let vix = find_index(&store, &["INDIA VIX".to_string()]).map(|t| t.current_price);
                     let _ = app.emit(SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));
                 }
@@ -102,6 +125,7 @@ pub fn spawn_fyers(
     app: AppHandle,
     cfg: AppConfig,
     creds: FyersCreds,
+    recorder: Arc<Recorder>,
     symbol: String,
     expiry: ExpiryItem,
 ) -> ChainHandle {
@@ -110,7 +134,19 @@ pub fn spawn_fyers(
         loop {
             match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(&expiry.value)).await {
                 Ok(data) => {
-                    let _ = app.emit(SNAPSHOT_EVENT, fyers::to_snapshot(&data, &symbol, &expiry, cfg.risk_free_rate));
+                    let snap = fyers::to_snapshot(&data, &symbol, &expiry, cfg.risk_free_rate);
+                    let now = market_clock::get_ist_now().timestamp();
+                    for row in &snap.rows {
+                        for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
+                            if let Some(px) = leg.ltp {
+                                recorder.record(
+                                    &option_key(&symbol, &expiry.date, row.strike, is_call),
+                                    now, px, leg.volume, leg.oi,
+                                );
+                            }
+                        }
+                    }
+                    let _ = app.emit(SNAPSHOT_EVENT, snap);
                 }
                 Err(e) => {
                     let _ = app.emit(STATUS_EVENT, ChainStatus { state: "error", message: e.to_string() });

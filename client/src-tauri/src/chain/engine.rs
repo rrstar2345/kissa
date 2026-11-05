@@ -53,6 +53,18 @@ impl ChainEngine {
         }
     }
 
+    /// Strike range (lo, hi) covering `n` known strikes either side of the
+    /// one nearest `spot`; used to limit which strikes are stored.
+    pub fn strike_window(&self, spot: f64, n: usize) -> Option<(f64, f64)> {
+        let strikes: Vec<f64> = self.rows.values().map(|r| r.strike).collect();
+        let i = strikes
+            .iter()
+            .enumerate()
+            .min_by(|a, b| (a.1 - spot).abs().partial_cmp(&(b.1 - spot).abs()).unwrap())?
+            .0;
+        Some((strikes[i.saturating_sub(n)], strikes[(i + n).min(strikes.len() - 1)]))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
@@ -165,6 +177,17 @@ mod tests {
             ce: LegTick { ltp: Some(ce), oi: Some(ce_oi), ..Default::default() },
             pe: LegTick { ltp: Some(pe), ..Default::default() },
         }
+    }
+
+    #[test]
+    fn strike_window_covers_n_each_side() {
+        let exp = Utc::now().date_naive() + chrono::Duration::days(10);
+        let mut e = ChainEngine::new("NIFTY".into(), "x".into(), exp, 0.07);
+        for k in 0..10 {
+            e.apply(tick(24000.0 + k as f64 * 50.0, 1.0, 1.0, 1.0));
+        }
+        assert_eq!(e.strike_window(24230.0, 2), Some((24150.0, 24350.0)));
+        assert_eq!(e.strike_window(10.0, 2), Some((24000.0, 24100.0)));
     }
 
     #[test]

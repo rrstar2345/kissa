@@ -100,6 +100,8 @@ impl Default for MarketRuntimeConfig {
 pub struct FyersConfig {
     /// Option chain endpoint. Confirm against Fyers' API reference if it changes.
     pub chain_url: String,
+    /// Historical candles endpoint (not yet verified against live Fyers).
+    pub history_url: String,
     /// Seconds between chain polls (mind your plan's rate limits).
     pub poll_secs: u64,
     /// Strikes each side of ATM requested from Fyers (max 50).
@@ -110,9 +112,29 @@ impl Default for FyersConfig {
     fn default() -> Self {
         Self {
             chain_url: "https://api-t1.fyers.in/data/options-chain-v3".into(),
+            history_url: "https://api-t1.fyers.in/data/history".into(),
             poll_secs: 5,
             strike_count: 25,
         }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct ChartsConfig {
+    /// Option strikes each side of ATM whose ticks are stored for charts.
+    pub persist_strikes_each_side: usize,
+    /// Seconds between DB flushes of in-memory 1m bars.
+    pub flush_secs: u64,
+    /// Days of 1m bars kept (daily bars are kept indefinitely).
+    pub bars_1m_keep_days: i64,
+    /// Days after expiry before an option's bars are deleted.
+    pub option_expiry_grace_days: i64,
+}
+
+impl Default for ChartsConfig {
+    fn default() -> Self {
+        Self { persist_strikes_each_side: 20, flush_secs: 5, bars_1m_keep_days: 120, option_expiry_grace_days: 7 }
     }
 }
 
@@ -122,6 +144,7 @@ pub struct AppConfig {
     pub system: SystemConfig,
     pub market_runtime: MarketRuntimeConfig,
     pub fyers: FyersConfig,
+    pub charts: ChartsConfig,
     /// Annualised risk-free rate used for Greeks/IV (decimal, 0.07 = 7%).
     pub risk_free_rate: f64,
 }
@@ -132,6 +155,7 @@ impl Default for AppConfig {
             system: SystemConfig::default(),
             market_runtime: MarketRuntimeConfig::default(),
             fyers: FyersConfig::default(),
+            charts: ChartsConfig::default(),
             risk_free_rate: 0.07,
         }
     }

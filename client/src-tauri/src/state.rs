@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::chain::runner::ChainHandle;
+use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
 use crate::market::market_clock::SharedSessionState;
 use crate::market::symbols::FnoIndex;
@@ -17,6 +18,7 @@ pub struct AppState {
     pub indices: IndexStore,
     pub fno: RwLock<Vec<FnoIndex>>,
     pub chain: Mutex<Option<ChainHandle>>,
+    pub recorder: Arc<Recorder>,
 }
 
 pub type SharedState = Arc<AppState>;

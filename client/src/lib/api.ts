@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Account,
+  BackfillResult,
+  ChartData,
+  IndicatorSpec,
+  InstrumentList,
   ExpiryItem,
   IndexTick,
   MarketStatus,
@@ -18,6 +22,12 @@ export const api = {
   startChain: (source: Source, symbol: string, expiry: ExpiryItem) =>
     invoke<void>('start_chain', { source, symbol, expiry }),
   stopChain: () => invoke<void>('stop_chain'),
+
+  getChart: (instrument: string, interval: string, indicators: IndicatorSpec[], limit = 1500) =>
+    invoke<ChartData>('get_chart', { req: { instrument, interval, indicators, limit } }),
+  listChartInstruments: () => invoke<InstrumentList>('list_chart_instruments'),
+  backfillChart: (instrument: string, interval: '1m' | '1d', days: number) =>
+    invoke<BackfillResult>('backfill_chart', { instrument, interval, days }),
 
   getSetting: (key: string) => invoke<string | null>('get_setting', { key }),
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),

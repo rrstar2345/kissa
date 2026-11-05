@@ -1,5 +1,6 @@
 mod accounts;
 mod chain;
+mod charts;
 mod commands;
 mod db;
 mod market;
@@ -36,12 +37,13 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
-                db: pool,
+                db: pool.clone(),
                 stats: stats::new_shared_stats(),
                 session: market_clock::new_shared_session_state(),
                 indices: new_index_store(),
                 fno: RwLock::new(Vec::new()),
                 chain: Mutex::new(None),
+                recorder: charts::recorder::Recorder::new(pool.clone()),
             });
             app.manage(state.clone());
 
@@ -56,11 +58,23 @@ pub fn run() {
                 }
             });
 
+            // Chart data: live bars are folded in memory and flushed to SQLite.
+            state.recorder.clone().spawn(app.handle().clone(), config.charts.flush_secs);
+            charts::store::spawn_maintenance(state.db.clone(), config.charts.clone());
+
             // Index streamer: always on; feeds the header ticker and gives
             // the chain engine its underlying price.
             let handle = app.handle().clone();
             let store = state.indices.clone();
+            let recorder = state.recorder.clone();
             let sink: IndexSink = Arc::new(move |tick: IndexTick| {
+                recorder.record(
+                    &charts::instrument::index_key(&tick.index_name),
+                    market_clock::get_ist_now().timestamp(),
+                    tick.current_price,
+                    None,
+                    None,
+                );
                 if let Ok(mut m) = store.write() {
                     m.insert(tick.index_name.clone(), tick.clone());
                 }
@@ -87,6 +101,9 @@ pub fn run() {
             commands::save_account,
             commands::delete_account,
             commands::test_account,
+            commands::get_chart,
+            commands::list_chart_instruments,
+            commands::backfill_chart,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

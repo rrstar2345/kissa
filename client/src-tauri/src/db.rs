@@ -38,6 +38,7 @@ pub async fn init_pool(db_file: &Path) -> Result<SqlitePool> {
     )
     .execute(&pool)
     .await?;
+    crate::charts::store::init(&pool).await?;
     Ok(pool)
 }
 

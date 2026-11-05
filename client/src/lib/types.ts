@@ -102,3 +102,85 @@ export interface ChainStatus {
   state: 'started' | 'error';
   message: string;
 }
+
+// ---------------------------------------------------------------- charts ---
+
+export interface Bar {
+  ts: number; // epoch seconds (UTC), bucket start
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  oi: number | null;
+}
+
+export type IndicatorKind = 'sma' | 'ema' | 'rsi' | 'macd' | 'bb' | 'vwap' | 'supertrend';
+
+export interface IndicatorSpec {
+  /** Stable preset key used by the UI, e.g. `ema:21` (ignored by the backend). */
+  key: string;
+  kind: IndicatorKind;
+  period?: number;
+  fast?: number;
+  slow?: number;
+  signal?: number;
+  mult?: number;
+}
+
+export interface IndicatorLine {
+  id: string;
+  label: string;
+  /** `price` or a sub-pane id (`rsi`, `macd`) */
+  pane: string;
+  style: 'line' | 'histogram';
+  tone: 'up' | 'down' | null;
+  points: { time: number; value: number | null }[];
+}
+
+export interface ChartSignal {
+  time: number;
+  side: 'buy' | 'sell';
+  price: number;
+  source: string;
+}
+
+export interface ChartData {
+  bars: Bar[];
+  lines: IndicatorLine[];
+  signals: ChartSignal[];
+}
+
+export interface OptionExpiryInfo {
+  symbol: string;
+  expiry: string; // YYYY-MM-DD
+  strikes: number[];
+}
+
+export interface InstrumentList {
+  indices: string[];
+  options: OptionExpiryInfo[];
+}
+
+export interface BackfillResult {
+  symbol: string;
+  fetched: number;
+  inserted: number;
+}
+
+export interface BarEvent extends Bar {
+  instrument: string;
+}
+
+export interface PanelConfig {
+  id: string;
+  instrument: string | null;
+  interval: string;
+  indicators: IndicatorSpec[];
+  volume: boolean;
+}
+
+export interface ChartsLayout {
+  cols: 1 | 2 | 3;
+  panels: PanelConfig[];
+}

@@ -4,6 +4,7 @@ use tauri::{AppHandle, State};
 
 use crate::accounts::{self, Account, SaveAccountInput, TestResult};
 use crate::chain::runner;
+use crate::charts::{backfill, indicators, resample, store, BackfillResult, ChartRequest, ChartResponse, InstrumentList};
 use crate::chain::{fyers, ExpiryItem};
 use crate::db;
 use crate::market::events::IndexTick;
@@ -66,7 +67,7 @@ pub async fn list_fno_symbols(state: State<'_, SharedState>) -> Res<Vec<String>>
     }
 }
 
-async fn active_fyers_creds(state: &SharedState) -> anyhow::Result<fyers::FyersCreds> {
+pub(crate) async fn active_fyers_creds(state: &SharedState) -> anyhow::Result<fyers::FyersCreds> {
     let id = db::get_setting(&state.db, "data.fyers_account")
         .await?
         .filter(|s| !s.is_empty())
@@ -105,7 +106,7 @@ pub async fn start_chain(
     }
     let handle = if source == "fyers" {
         let creds = active_fyers_creds(&state).await.map_err(err)?;
-        runner::spawn_fyers(app, state.config.clone(), creds, symbol, expiry)
+        runner::spawn_fyers(app, state.config.clone(), creds, state.recorder.clone(), symbol, expiry)
     } else {
         let index_names = state
             .fno
@@ -121,6 +122,7 @@ pub async fn start_chain(
             state.stats.clone(),
             state.session.clone(),
             state.indices.clone(),
+            state.recorder.clone(),
             symbol,
             expiry,
             index_names,
@@ -174,4 +176,37 @@ pub async fn test_account(id: String, state: State<'_, SharedState>) -> Res<Test
         Ok(r) => r,
         Err(e) => TestResult { ok: false, message: e.to_string() },
     })
+}
+
+// ---------------------------------------------------------------- charts ---
+
+#[tauri::command]
+pub async fn get_chart(req: ChartRequest, state: State<'_, SharedState>) -> Res<ChartResponse> {
+    let interval = resample::parse_interval(&req.interval)
+        .ok_or_else(|| format!("Unsupported interval: {}", req.interval))?;
+    state.recorder.flush_now().await;
+    let bars = store::chart_bars(&state.db, &req.instrument, interval, req.limit.unwrap_or(1500))
+        .await
+        .map_err(err)?;
+    let out = indicators::compute(&bars, &req.indicators);
+    Ok(ChartResponse { bars, lines: out.lines, signals: out.signals })
+}
+
+#[tauri::command]
+pub async fn list_chart_instruments(state: State<'_, SharedState>) -> Res<InstrumentList> {
+    store::list_instruments(&state.db).await.map_err(err)
+}
+
+/// Fill history gaps from Fyers (needs the Fyers data account to be set).
+#[tauri::command]
+pub async fn backfill_chart(
+    instrument: String,
+    interval: String,
+    days: u32,
+    state: State<'_, SharedState>,
+) -> Res<BackfillResult> {
+    let creds = active_fyers_creds(&state).await.map_err(err)?;
+    backfill::backfill(&state.config.fyers, &creds, &state.db, &instrument, &interval, days)
+        .await
+        .map_err(err)
 }

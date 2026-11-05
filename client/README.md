@@ -10,7 +10,7 @@ KISSA streams option prices, lets you place orders through your own [`broker-pro
 |---|---|
 | Accounts (paper, Dhan, broker-proxy, Fyers data) | ✅ Phase 1 |
 | Option chain (NSE live stream / Fyers polling, IV + Greeks, configurable columns) | ✅ Phase 1 |
-| Charts (lightweight-charts, Rust-computed indicators) | Phase 2 |
+| Charts (lightweight-charts, stored 1m/daily bars, Rust-computed indicators + signals, Fyers backfill) | ✅ Phase 2 |
 | Orders (broker-proxy REST + WSS, paper fills, local order log) | Phase 3 |
 | Dashboard (live P&L, trader's diary) | Phase 3 |
 
@@ -20,6 +20,13 @@ KISSA streams option prices, lets you place orders through your own [`broker-pro
 - **Fyers (optional)** – your own API app ID + access token (stored in the OS keychain). The chain is polled (default every 5 s) from the Fyers v3 [Option Chain API](https://fyers.in/api-docs/v3/api/market-data/option-chain/) with `greeks=1`, so it also works after hours. Fyers access tokens expire daily; paste a fresh one under **Accounts** when needed.
 
 Choose the source on the Option Chain page or under **Accounts → Market data source**.
+
+### Charts
+
+- **Storage**: live ticks are folded in memory into 1-minute bars (index ticks, plus option strikes within ±`charts.persist_strikes_each_side` of ATM for the chain being streamed) and flushed to the `bars` table every few seconds. Only 09:15–15:30 IST is recorded. Finished days roll up to daily bars; 1m bars are kept `charts.bars_1m_keep_days` days, expired options are purged after `charts.option_expiry_grace_days`. Other intervals (3m–60m) are resampled on read, aligned to 09:15 IST.
+- **Indicators** (computed in Rust): SMA, EMA, RSI, MACD, Bollinger, VWAP, Supertrend. Signals: fast/slow MA cross (when two of the same kind are enabled), MACD cross, RSI leaving 30/70, Bollinger re-entry, Supertrend flip. Index bars have no volume, so VWAP there is the running typical-price mean.
+- **Backfill** (Fyers, per chart): fills 1m or daily gaps and never overwrites stored bars. Uses `fyers.history_url` from `settings.json` (unverified against the live API). Expired option contracts normally have no history.
+- Chart layout (panels, intervals, indicators) is saved in the `charts.layout` setting.
 
 ### Greeks
 
