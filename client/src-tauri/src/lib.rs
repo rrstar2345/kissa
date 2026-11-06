@@ -8,6 +8,7 @@ mod secrets;
 mod settings;
 mod state;
 mod stats;
+mod trading;
 
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -35,6 +36,9 @@ pub fn run() {
             info!("App root: {}", paths.root.display());
 
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
+            let (ltp, ltp_rx) = trading::ltp::LtpStore::new();
+            let (trading_svc, dhan_rx) =
+                trading::service::TradingService::new(pool.clone(), config.clone(), ltp.clone(), app.handle().clone());
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
                 db: pool.clone(),
@@ -44,8 +48,15 @@ pub fn run() {
                 fno: RwLock::new(Vec::new()),
                 chain: Mutex::new(None),
                 recorder: charts::recorder::Recorder::new(pool.clone()),
+                ltp,
+                trading: trading_svc.clone(),
             });
             app.manage(state.clone());
+
+            // Orders: paper matching, Dhan live updates, and the background
+            // price feed for open positions / pending paper orders.
+            trading_svc.start(ltp_rx, dhan_rx);
+            trading::feed::spawn(state.clone());
 
             // Market-clock supervisor: keeps NSE time offset fresh and flips
             // the shared session between Active and Idle.
@@ -104,6 +115,17 @@ pub fn run() {
             commands::get_chart,
             commands::list_chart_instruments,
             commands::backfill_chart,
+            commands::place_order,
+            commands::cancel_order,
+            commands::modify_order,
+            commands::list_orders,
+            commands::list_trades,
+            commands::get_dashboard,
+            commands::get_diary,
+            commands::contract_info,
+            commands::refresh_instruments,
+            commands::connect_broker,
+            commands::sync_orders,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

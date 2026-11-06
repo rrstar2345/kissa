@@ -2,6 +2,7 @@
 //! here — see `secrets.rs` (OS keychain).
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::{env, fs, io, path::PathBuf};
 use tracing::{error, info};
 
@@ -138,6 +139,69 @@ impl Default for ChartsConfig {
     }
 }
 
+/// Statutory charges for index options, as percentages (0.15 = 0.15 %).
+/// These are estimates: check them against your broker's contract note.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct ChargesConfig {
+    /// STT on the premium of options *sold*.
+    pub stt_sell_pct: f64,
+    /// NSE transaction charge on premium turnover (both sides).
+    pub exchange_txn_pct: f64,
+    /// SEBI turnover fee (both sides).
+    pub sebi_pct: f64,
+    /// Stamp duty on the *buy* side.
+    pub stamp_buy_pct: f64,
+    /// GST on brokerage + exchange charge + SEBI fee.
+    pub gst_pct: f64,
+}
+
+impl Default for ChargesConfig {
+    fn default() -> Self {
+        Self { stt_sell_pct: 0.15, exchange_txn_pct: 0.03503, sebi_pct: 0.0001, stamp_buy_pct: 0.003, gst_pct: 18.0 }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct TradingConfig {
+    /// Let paper orders be placed and filled outside 09:15-15:30 IST (fills
+    /// use the last known price). Off by default so paper behaves like the market.
+    pub paper_allow_off_hours: bool,
+    /// Flat brokerage per executed Dhan order (rupees).
+    pub dhan_brokerage_per_order: f64,
+    /// Dhan brokerage is the lower of the flat fee and this % of turnover.
+    pub dhan_brokerage_cap_pct: f64,
+    /// Dhan instrument list (CSV) used to find a contract's securityId and lot size.
+    pub scrip_master_url: String,
+    /// Re-download the instrument list when older than this many hours.
+    pub scrip_refresh_hours: i64,
+    /// HTTP timeout for broker-proxy calls.
+    pub request_timeout_secs: u64,
+    /// Used for paper trading only when the instrument list has no lot size.
+    pub fallback_lot_sizes: HashMap<String, i64>,
+    pub charges: ChargesConfig,
+}
+
+impl Default for TradingConfig {
+    fn default() -> Self {
+        let fallback_lot_sizes = [("NIFTY", 65), ("BANKNIFTY", 30), ("FINNIFTY", 60), ("MIDCPNIFTY", 120), ("NIFTYNXT50", 25)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        Self {
+            paper_allow_off_hours: false,
+            dhan_brokerage_per_order: 20.0,
+            dhan_brokerage_cap_pct: 0.03,
+            scrip_master_url: "https://images.dhan.co/api-data/api-scrip-master-detailed.csv".into(),
+            scrip_refresh_hours: 24,
+            request_timeout_secs: 30,
+            fallback_lot_sizes,
+            charges: ChargesConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct AppConfig {
@@ -145,6 +209,7 @@ pub struct AppConfig {
     pub market_runtime: MarketRuntimeConfig,
     pub fyers: FyersConfig,
     pub charts: ChartsConfig,
+    pub trading: TradingConfig,
     /// Annualised risk-free rate used for Greeks/IV (decimal, 0.07 = 7%).
     pub risk_free_rate: f64,
 }
@@ -156,6 +221,7 @@ impl Default for AppConfig {
             market_runtime: MarketRuntimeConfig::default(),
             fyers: FyersConfig::default(),
             charts: ChartsConfig::default(),
+            trading: TradingConfig::default(),
             risk_free_rate: 0.07,
         }
     }

@@ -18,6 +18,7 @@ use crate::market::streamers::options;
 use crate::market::market_clock::{self, SharedSessionState};
 use crate::settings::AppConfig;
 use crate::stats::SharedStats;
+use crate::trading::ltp::LtpStore;
 
 pub const SNAPSHOT_EVENT: &str = "chain-snapshot";
 pub const STATUS_EVENT: &str = "chain-status";
@@ -31,9 +32,15 @@ pub struct ChainStatus {
 pub struct ChainHandle {
     tasks: Vec<JoinHandle<()>>,
     stream_key: Option<String>,
+    /// (symbol, expiry ISO date) this handle streams.
+    target: (String, String),
 }
 
 impl ChainHandle {
+    pub fn target(&self) -> (String, String) {
+        self.target.clone()
+    }
+
     pub async fn stop(self, stats: &SharedStats) {
         for t in &self.tasks {
             t.abort();
@@ -66,11 +73,13 @@ pub fn spawn_nse(
     session: SharedSessionState,
     store: IndexStore,
     recorder: Arc<Recorder>,
+    ltp: Arc<LtpStore>,
     symbol: String,
     expiry: ExpiryItem,
     index_names: Vec<String>,
 ) -> anyhow::Result<ChainHandle> {
     let date = NaiveDate::parse_from_str(&expiry.date, "%Y-%m-%d")?;
+    let target = (symbol.clone(), expiry.date.clone());
     let (tx, mut rx) = unbounded_channel();
     let stream_key = format!("options:{}:{}", symbol, expiry.value);
 
@@ -92,6 +101,12 @@ pub fn spawn_nse(
         loop {
             tokio::select! {
                 Some(t) = rx.recv() => {
+                    // Every strike feeds the shared price store (positions, paper fills).
+                    for (is_call, leg) in [(true, &t.ce), (false, &t.pe)] {
+                        if let Some(px) = leg.ltp {
+                            ltp.set(&option_key(&symbol, &expiry.date, t.strike, is_call), px);
+                        }
+                    }
                     if let Some((lo, hi)) = window {
                         if t.strike >= lo - 1e-6 && t.strike <= hi + 1e-6 {
                             let now = market_clock::get_ist_now().timestamp();
@@ -118,7 +133,7 @@ pub fn spawn_nse(
         }
     });
 
-    Ok(ChainHandle { tasks: vec![streamer, engine_task], stream_key: Some(stream_key) })
+    Ok(ChainHandle { tasks: vec![streamer, engine_task], stream_key: Some(stream_key), target })
 }
 
 pub fn spawn_fyers(
@@ -126,9 +141,11 @@ pub fn spawn_fyers(
     cfg: AppConfig,
     creds: FyersCreds,
     recorder: Arc<Recorder>,
+    ltp: Arc<LtpStore>,
     symbol: String,
     expiry: ExpiryItem,
 ) -> ChainHandle {
+    let target = (symbol.clone(), expiry.date.clone());
     let task = tokio::spawn(async move {
         let poll = Duration::from_secs(cfg.fyers.poll_secs.max(1));
         loop {
@@ -139,10 +156,9 @@ pub fn spawn_fyers(
                     for row in &snap.rows {
                         for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
                             if let Some(px) = leg.ltp {
-                                recorder.record(
-                                    &option_key(&symbol, &expiry.date, row.strike, is_call),
-                                    now, px, leg.volume, leg.oi,
-                                );
+                                let key = option_key(&symbol, &expiry.date, row.strike, is_call);
+                                ltp.set(&key, px);
+                                recorder.record(&key, now, px, leg.volume, leg.oi);
                             }
                         }
                     }
@@ -155,5 +171,5 @@ pub fn spawn_fyers(
             tokio::time::sleep(poll).await;
         }
     });
-    ChainHandle { tasks: vec![task], stream_key: None }
+    ChainHandle { tasks: vec![task], stream_key: None, target }
 }

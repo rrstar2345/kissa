@@ -9,6 +9,8 @@ use crate::market::market_clock::SharedSessionState;
 use crate::market::symbols::FnoIndex;
 use crate::settings::AppConfig;
 use crate::stats::SharedStats;
+use crate::trading::ltp::LtpStore;
+use crate::trading::service::TradingService;
 
 pub struct AppState {
     pub config: AppConfig,
@@ -19,6 +21,9 @@ pub struct AppState {
     pub fno: RwLock<Vec<FnoIndex>>,
     pub chain: Mutex<Option<ChainHandle>>,
     pub recorder: Arc<Recorder>,
+    /// Latest option prices from whichever stream is running.
+    pub ltp: Arc<LtpStore>,
+    pub trading: Arc<TradingService>,
 }
 
 pub type SharedState = Arc<AppState>;

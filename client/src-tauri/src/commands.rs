@@ -106,7 +106,7 @@ pub async fn start_chain(
     }
     let handle = if source == "fyers" {
         let creds = active_fyers_creds(&state).await.map_err(err)?;
-        runner::spawn_fyers(app, state.config.clone(), creds, state.recorder.clone(), symbol, expiry)
+        runner::spawn_fyers(app, state.config.clone(), creds, state.recorder.clone(), state.ltp.clone(), symbol, expiry)
     } else {
         let index_names = state
             .fno
@@ -123,6 +123,7 @@ pub async fn start_chain(
             state.session.clone(),
             state.indices.clone(),
             state.recorder.clone(),
+            state.ltp.clone(),
             symbol,
             expiry,
             index_names,
@@ -167,7 +168,9 @@ pub async fn save_account(input: SaveAccountInput, state: State<'_, SharedState>
 
 #[tauri::command]
 pub async fn delete_account(id: String, state: State<'_, SharedState>) -> Res<()> {
-    accounts::delete(&state.db, &id).await.map_err(err)
+    accounts::delete(&state.db, &id).await.map_err(err)?;
+    state.trading.forget_account(&id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -209,4 +212,90 @@ pub async fn backfill_chart(
     backfill::backfill(&state.config.fyers, &creds, &state.db, &instrument, &interval, days)
         .await
         .map_err(err)
+}
+
+// --------------------------------------------------------------- trading ---
+
+use crate::trading::{ContractInfo, Dashboard, DiaryDay, OrderRow, PlaceOrderInput, TradeRow};
+
+#[tauri::command]
+pub async fn place_order(input: PlaceOrderInput, state: State<'_, SharedState>) -> Res<OrderRow> {
+    state.trading.place(input).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn cancel_order(id: String, state: State<'_, SharedState>) -> Res<OrderRow> {
+    state.trading.cancel(&id).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn modify_order(
+    id: String,
+    price: f64,
+    trigger_price: Option<f64>,
+    state: State<'_, SharedState>,
+) -> Res<OrderRow> {
+    state.trading.modify(&id, price, trigger_price).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn list_orders(
+    account_id: Option<String>,
+    date: Option<String>,
+    state: State<'_, SharedState>,
+) -> Res<Vec<OrderRow>> {
+    state.trading.list_orders(account_id.as_deref(), date.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn list_trades(
+    account_id: Option<String>,
+    date: Option<String>,
+    state: State<'_, SharedState>,
+) -> Res<Vec<TradeRow>> {
+    state.trading.list_trades(account_id.as_deref(), date.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_dashboard(account_id: Option<String>, state: State<'_, SharedState>) -> Res<Dashboard> {
+    state.trading.dashboard(account_id.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn get_diary(
+    account_id: Option<String>,
+    from: String,
+    to: String,
+    state: State<'_, SharedState>,
+) -> Res<Vec<DiaryDay>> {
+    state.trading.diary(account_id.as_deref(), &from, &to).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn contract_info(
+    symbol: String,
+    expiry: String,
+    strike: f64,
+    is_call: bool,
+    state: State<'_, SharedState>,
+) -> Res<ContractInfo> {
+    state.trading.contract_info(&symbol, &expiry, strike, is_call).await.map_err(err)
+}
+
+/// Download Dhan's instrument list. Returns the number of option contracts stored.
+#[tauri::command]
+pub async fn refresh_instruments(state: State<'_, SharedState>) -> Res<usize> {
+    state.trading.refresh_instruments().await.map_err(err)
+}
+
+/// Open the proxy session and live order updates for a Dhan account.
+#[tauri::command]
+pub async fn connect_broker(account_id: String, state: State<'_, SharedState>) -> Res<()> {
+    state.trading.connect_broker(&account_id).await.map_err(err)
+}
+
+/// Re-read the broker's order book now.
+#[tauri::command]
+pub async fn sync_orders(account_id: String, state: State<'_, SharedState>) -> Res<usize> {
+    state.trading.sync_dhan(&account_id).await.map_err(err)
 }
