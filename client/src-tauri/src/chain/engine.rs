@@ -73,11 +73,10 @@ impl ChainEngine {
         let t = years_to_expiry(self.expiry);
         let mut rows: Vec<StrikeRow> = self.rows.values().cloned().collect();
 
-        // Reference price for ATM / forward: index spot if known, else the
-        // strike where |CE - PE| is smallest.
-        let spot_px = spot.map(|s| s.current_price);
-        let ref_px = spot_px.or_else(|| parity_strike(&rows));
-        let atm = ref_px.and_then(|p| nearest_strike(&rows, p));
+        // ATM comes only from the real index price. A parity-based guess on the
+        // few strikes that arrive first is wrong, so without a spot there is no ATM.
+        let spot_px = spot.map(|s| s.current_price).filter(|p| *p > 0.0);
+        let atm = spot_px.and_then(|p| nearest_strike(&rows, p));
 
         // Forward from put-call parity at ATM, falling back to S·e^{rT}.
         let forward = atm
@@ -160,13 +159,6 @@ fn nearest_strike(rows: &[StrikeRow], px: f64) -> Option<f64> {
         .min_by(|a, b| (a - px).abs().partial_cmp(&(b - px).abs()).unwrap())
 }
 
-fn parity_strike(rows: &[StrikeRow]) -> Option<f64> {
-    rows.iter()
-        .filter_map(|r| Some((r.strike, (r.ce.ltp? - r.pe.ltp?).abs())))
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-        .map(|(k, _)| k)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,11 +190,33 @@ mod tests {
         e.apply(tick(24000.0, 155.0, 138.0, 1300.0));
         e.apply(OptionTick { strike: 24000.0, ce: LegTick::default(), pe: LegTick::default() });
         let snap = e.snapshot(None, None);
+        assert_eq!(snap.atm, None); // no index price, so no ATM guess
         assert_eq!(snap.rows.len(), 1);
         let ce = &snap.rows[0].ce;
         assert_eq!(ce.ltp, Some(155.0)); // null update keeps last value
         assert_eq!(ce.oi_change, Some(300.0));
-        assert_eq!(snap.atm, Some(24000.0));
         assert!(ce.iv.is_some() || ce.ltp.is_some());
+    }
+
+    #[test]
+    fn atm_follows_index_price() {
+        let exp = Utc::now().date_naive() + chrono::Duration::days(10);
+        let mut e = ChainEngine::new("NIFTY".into(), "x".into(), exp, 0.07);
+        for k in 0..5 {
+            e.apply(tick(24000.0 + k as f64 * 50.0, 100.0, 100.0, 1.0));
+        }
+        let spot = IndexTick {
+            time: String::new(),
+            index_name: "NIFTY 50".into(),
+            current_price: 24108.0,
+            change: 0.0,
+            per_change: 0.0,
+            previous_close: 0.0,
+            open: 0.0,
+            high: 0.0,
+            low: 0.0,
+            mkt_status: String::new(),
+        };
+        assert_eq!(e.snapshot(Some(&spot), None).atm, Some(24100.0));
     }
 }

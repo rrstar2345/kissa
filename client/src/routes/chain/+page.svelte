@@ -7,7 +7,8 @@
   import { market } from '$lib/market.svelte';
   import ChainTable from '$lib/components/ChainTable.svelte';
   import ColumnPicker from '$lib/components/ColumnPicker.svelte';
-  import type { ChainSnapshot, ChainStatus, ExpiryItem, Source } from '$lib/types';
+  import OrderTicket from '$lib/components/OrderTicket.svelte';
+  import type { ChainSnapshot, ChainStatus, ExpiryItem, Source, TicketRequest } from '$lib/types';
 
   let source = $state<Source>('nse');
   let symbols = $state<string[]>([]);
@@ -19,6 +20,7 @@
   let busy = $state(false);
   let visible = $state<string[]>([...DEFAULT_VISIBLE]);
   let strikeWindow = $state(10);
+  let ticket = $state<TicketRequest | null>(null);
 
   const expiry = $derived(expiries.find((e) => e.value === expiryValue) ?? null);
   let unlisten: UnlistenFn[] = [];
@@ -162,11 +164,16 @@
       </div>
     </div>
 
-    <ChainTable {snapshot} {visible} window={strikeWindow} />
+    <ChainTable
+      {snapshot}
+      {visible}
+      window={strikeWindow}
+      onpick={(r) => expiry && (ticket = { ...r, symbol, expiry: expiry.date })}
+    />
 
     {#if snapshot.source === 'nse'}
       <p class="text-xs text-base-content/50">
-        OI Chg is measured from the first OI seen this session unless NSE supplies it. IV and Greeks are computed
+        Click a bid, ask or LTP to open an order ticket. OI Chg is measured from the first OI seen this session unless NSE supplies it. IV and Greeks are computed
         from LTP (Black-76, r = 7%).
       </p>
     {/if}
@@ -180,7 +187,7 @@
             NSE only streams while the market is open (about 9:00–15:30 IST, Mon–Fri). The app checks periodically.
             Switch to Fyers to view the last session's data now.
           {:else if source === 'nse'}
-            Stream: {optionStream?.state ?? 'starting'}{optionStream?.lastError ? ` — ${optionStream.lastError}` : ''}
+            Stream: {optionStream?.state ?? 'starting'}{optionStream?.lastError ? ` — ${optionStream.lastError}` : ''}. The table appears once the index price arrives, so ATM is correct.
           {:else}
             Fetching from Fyers…
           {/if}
@@ -189,3 +196,5 @@
     </div>
   {/if}
 </div>
+
+<OrderTicket request={ticket} onclose={() => (ticket = null)} />

@@ -4,6 +4,7 @@
   import { page } from '$app/state';
   import { market } from '$lib/market.svelte';
   import { theme } from '$lib/theme.svelte';
+  import { trading } from '$lib/trading.svelte';
   import { num, signed, trend } from '$lib/format';
 
   let { children } = $props();
@@ -21,7 +22,11 @@
   onMount(() => {
     theme.init();
     market.start();
-    return () => market.stop();
+    trading.start();
+    return () => {
+      market.stop();
+      trading.stop();
+    };
   });
 
   const active = (href: string) =>

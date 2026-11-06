@@ -24,7 +24,7 @@ Decisions made: phased build; secrets in OS keychain (`keyring`), everything els
 |---|---|---|
 | 1 | Foundation, Accounts, Option chain | Done (compiles, 5 unit tests pass, frontend builds; **never run live**) |
 | 2 | Charts + OHLC storage + indicators + Fyers backfill | Written, **not compiled or run** (no Rust in sandbox); see Phase 2 notes |
-| 3 | Orders + Dashboard/diary | TODO |
+| 3 | Orders + Dashboard/diary | Backend and frontend written; compiles and runs (user-verified). **Never run against live Dhan/proxy**; see Phase 3 notes |
 
 ## Phase 1 architecture (client/)
 Frontend `src/`: `app.css` (all theme/styles; themes `kissa-dark`/`kissa-light`; up=`success`, down=`error`), `lib/api.ts` (typed invoke wrappers + `getJson/setJson` pref helpers), `lib/types.ts`, `lib/columns.ts` (chain column defs), `lib/market.svelte.ts` (status + index ticks store), `lib/theme.svelte.ts`, `lib/components/{ChainTable,ColumnPicker,AccountForm,ComingSoon}.svelte`, routes `/`, `/chain`, `/charts`, `/orders`, `/accounts` (dashboard/charts/orders are `ComingSoon` placeholders).
@@ -55,7 +55,24 @@ Decisions: persist indices + option strikes within ±20 of ATM of the streamed c
 3. Indicators in Rust (EMA/SMA, RSI, MACD, Bollinger, VWAP, Supertrend) returning series plus buy/sell signal markers; keep the module pluggable.
 4. Frontend: `lightweight-charts` panels, multiple per page, layouts saved in a `layouts` table (or settings JSON), live updates from tick events.
 
-## Phase 3 plan (orders + dashboard)
+## Phase 3 notes (as built)
+Decisions: Dhan `securityId` from Dhan's instrument CSV (cached in table `scrip`, refreshed daily); global `LtpStore` fed by chain engines plus a background feed (`trading/feed.rs`) for symbols with open positions or pending paper orders; full charge estimate with rates in `settings.json` under `trading.charges`; order entry by clicking bid/ask/LTP on the chain (ticket drawer).
+Backend `src-tauri/src/trading/`: `mod.rs` (types, camelCase serde), `ltp.rs`, `charges.rs`, `scrip.rs`, `store.rs` (tables `orders`, `trades`; positions folded from trades by average cost; a stale `orders`/`trades` table without `trade_date` is renamed `*_legacy_<ts>` at startup), `paper.rs`, `dhan.rs` (proxy REST + WSS with `since` replay), `service.rs` (`TradingService`), `feed.rs`.
+Commands: `place_order, cancel_order, modify_order, list_orders, list_trades, get_dashboard, get_diary, contract_info, refresh_instruments, connect_broker, sync_orders`. Events: `order-update`, `broker-status`.
+Frontend: `lib/trading.svelte.ts`, `lib/components/OrderTicket.svelte`, ChainTable `onpick`, `routes/orders` (Orders/Trades/Positions), `routes/+page.svelte` (dashboard + diary).
+SQLx 0.9 note: `format!`-built SQL must be wrapped in `sqlx::AssertSqlSafe(...)` (only constants are interpolated).
+Chain/index fixes made after first run: ATM now comes only from the real index price (no put-call-parity guess); the snapshot is held until the index price arrives, with a 30 s fallback that shows rows without ATM; the indices streamer's idle wait is interruptible and the supervisor sets the session mode before the NSE time request (previously the index price could take up to ~2 min after start). The NSE homepage warm-up often returns 403; cookies are optional for the streamers (Origin/Referer/User-Agent are what they need), so this is only log noise.
+
+### Phase 3 behaviour gaps
+- Positions are keyed by account + instrument + product; no INTRADAY to MARGIN conversion, no auto square-off at day end, no expiry settlement (expired contracts just drop out).
+- Paper has no margin or capital check; `startingCapital` is informational.
+- Dhan partial fills are booked by cumulative-quantity deltas (unverified against a real feed); cancel of a partly filled order is allowed, modify is blocked.
+- An order left `UNKNOWN` after retries is resolved only by the 60 s order-book resync.
+- `save_account` does not explicitly drop a cached Dhan connection; credential changes are detected on next use (verify).
+- `last_close` position fallback reads `bars`; confirm the instrument key matches what the recorder stores.
+- Order ticket shows no live price; price field holds the clicked value.
+
+## Phase 3 plan (original proposal)
 Rust `broker` client trait with `ProxyDhan` (REST + WSS with `since` replay, correlationId generation, no market orders) and a local `Paper` executor (fills priced from live ticks, brokerage from account meta). Tables: orders/order log, trades, positions, charges. Orders page (LIMIT/SL only, tied to option-chain strike clicks). Dashboard: live P&L from open positions plus LTP, trader's diary with charges and realised P&L.
 
 ## Dev environment notes (sandbox and user)
@@ -72,4 +89,7 @@ Rust `broker` client trait with `ProxyDhan` (REST + WSS with `since` replay, cor
 - NSE chain is empty outside market hours (idle poll every 120 s); Fyers works after hours.
 - Idle/active streamer logic is ported as-is; chain stream runs only while the Option Chain page is open (index streamer is always on).
 - `tauri.conf.json` `csp` is null and default capabilities are in use; tighten before release.
+- Phase 3 never run against the real proxy, Dhan, NSE order flow or Fyers. Dhan instrument CSV column names/date format and proxy field names come from docs and code reading only; compare against the Go validators in `broker-proxy/` if a request is rejected.
+- Background feed assumes NSE expiry label format `DD-Mon-YYYY`.
+- Charges rates (e.g. STT 0.15% on option sell premium) and lot sizes (NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120, NIFTYNXT50 25) are estimates as of Nov 2026; verify.
 - Unused template assets remain in `client/static/` (vite/svelte/tauri svgs).

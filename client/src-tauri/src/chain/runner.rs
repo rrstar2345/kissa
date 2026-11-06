@@ -95,6 +95,7 @@ pub fn spawn_nse(
     let engine_task = tokio::spawn(async move {
         let mut engine = ChainEngine::new(symbol.clone(), expiry.label.clone(), date, cfg.risk_free_rate);
         let mut ticker = tokio::time::interval(Duration::from_millis(300));
+        let started = tokio::time::Instant::now();
         // Strikes near ATM whose ticks are stored for charts.
         let mut window: Option<(f64, f64)> = None;
         let each_side = cfg.charts.persist_strikes_each_side;
@@ -125,6 +126,15 @@ pub fn spawn_nse(
                 _ = ticker.tick() => {
                     if engine.is_empty() { continue; }
                     let spot = find_index(&store, &index_names);
+                    // Hold the table back until the index price is known; ATM and the
+                    // strike window depend on it and would otherwise be wrong.
+                    // After 30 s without it, show the rows anyway (no ATM highlight) so a
+                    // dead index stream never hides the whole chain.
+                    if spot.as_ref().map_or(true, |s| s.current_price <= 0.0)
+                        && started.elapsed() < Duration::from_secs(30)
+                    {
+                        continue;
+                    }
                     window = spot.as_ref().and_then(|s| engine.strike_window(s.current_price, each_side));
                     let vix = find_index(&store, &["INDIA VIX".to_string()]).map(|t| t.current_price);
                     let _ = app.emit(SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));

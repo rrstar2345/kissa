@@ -184,3 +184,148 @@ export interface ChartsLayout {
   cols: 1 | 2 | 3;
   panels: PanelConfig[];
 }
+
+// --------------------------------------------------------------- trading ---
+
+export type Side = 'BUY' | 'SELL';
+export type Product = 'INTRADAY' | 'MARGIN';
+export type OrderType = 'LIMIT' | 'STOP_LOSS';
+export type Validity = 'DAY' | 'IOC';
+
+export interface OrderRow {
+  id: string;
+  accountId: string;
+  accountKind: 'paper' | 'dhan';
+  correlationId: string;
+  brokerOrderId: string | null;
+  instrument: string;
+  symbol: string;
+  expiry: string; // YYYY-MM-DD
+  strike: number;
+  isCall: boolean;
+  securityId: string | null;
+  lotSize: number;
+  side: Side;
+  product: Product;
+  orderType: OrderType;
+  validity: Validity;
+  qty: number;
+  price: number;
+  triggerPrice: number;
+  status: string;
+  filledQty: number;
+  avgPrice: number;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+  tradeDate: string;
+}
+
+export interface TradeRow {
+  id: string;
+  accountId: string;
+  orderId: string;
+  instrument: string;
+  symbol: string;
+  expiry: string;
+  strike: number;
+  isCall: boolean;
+  lotSize: number;
+  side: Side;
+  product: Product;
+  qty: number;
+  price: number;
+  charges: number;
+  chargeDetail: string;
+  realised: number;
+  ts: string;
+  tradeDate: string;
+  extId: string | null;
+}
+
+export interface PlaceOrderInput {
+  accountId: string;
+  symbol: string;
+  expiry: string; // YYYY-MM-DD
+  strike: number;
+  isCall: boolean;
+  side: Side;
+  product: Product;
+  orderType: OrderType;
+  validity: Validity;
+  lots: number;
+  price: number;
+  triggerPrice?: number;
+}
+
+export interface ContractInfo {
+  lotSize: number | null;
+  securityId: string | null;
+  tradingSymbol: string | null;
+  lotSource: 'dhan' | 'fallback' | 'none';
+}
+
+export interface Position {
+  accountId: string;
+  accountName: string;
+  accountKind: string;
+  instrument: string;
+  symbol: string;
+  expiry: string;
+  strike: number;
+  isCall: boolean;
+  product: Product;
+  lotSize: number;
+  netQty: number;
+  avgPrice: number;
+  ltp: number | null;
+  ltpSource: 'live' | 'last' | 'none';
+  unrealised: number | null;
+}
+
+export interface AccountSummary {
+  accountId: string;
+  name: string;
+  kind: string;
+  startingCapital: number | null;
+  realisedToday: number;
+  chargesToday: number;
+  unrealised: number;
+  netToday: number;
+  openPositions: number;
+  tradesToday: number;
+  ordersToday: number;
+}
+
+export interface Dashboard {
+  asOf: string;
+  tradeDate: string;
+  accounts: AccountSummary[];
+  positions: Position[];
+}
+
+export interface DiaryDay {
+  date: string;
+  orders: number;
+  trades: number;
+  realised: number;
+  charges: number;
+  net: number;
+  rows: TradeRow[];
+}
+
+export interface BrokerStatus {
+  accountId: string;
+  state: 'connecting' | 'connected' | 'disconnected' | 'error' | 'feed_down';
+  detail: string;
+}
+
+/** What the chain hands to the order ticket when a price is clicked. */
+export interface TicketRequest {
+  symbol: string;
+  expiry: string; // YYYY-MM-DD
+  strike: number;
+  isCall: boolean;
+  side: Side;
+  price: number | null;
+}

@@ -11,8 +11,8 @@ KISSA streams option prices, lets you place orders through your own [`broker-pro
 | Accounts (paper, Dhan, broker-proxy, Fyers data) | ✅ Phase 1 |
 | Option chain (NSE live stream / Fyers polling, IV + Greeks, configurable columns) | ✅ Phase 1 |
 | Charts (lightweight-charts, stored 1m/daily bars, Rust-computed indicators + signals, Fyers backfill) | ✅ Phase 2 |
-| Orders (broker-proxy REST + WSS, paper fills, local order log) | Phase 3 |
-| Dashboard (live P&L, trader's diary) | Phase 3 |
+| Orders (broker-proxy REST + WSS, paper fills, local order log) | ✅ Phase 3 (compiles and runs; never exercised against live Dhan/proxy) |
+| Dashboard (live P&L, trader's diary) | ✅ Phase 3 |
 
 ## Data sources
 
@@ -27,6 +27,17 @@ Choose the source on the Option Chain page or under **Accounts → Market data s
 - **Indicators** (computed in Rust): SMA, EMA, RSI, MACD, Bollinger, VWAP, Supertrend. Signals: fast/slow MA cross (when two of the same kind are enabled), MACD cross, RSI leaving 30/70, Bollinger re-entry, Supertrend flip. Index bars have no volume, so VWAP there is the running typical-price mean.
 - **Backfill** (Fyers, per chart): fills 1m or daily gaps and never overwrites stored bars. Uses `fyers.history_url` from `settings.json` (unverified against the live API). Expired option contracts normally have no history.
 - Chart layout (panels, intervals, indicators) is saved in the `charts.layout` setting.
+
+### Orders and dashboard
+
+- **Placing orders**: click a bid, ask or LTP on the option chain to open the order ticket (ask/LTP prefill BUY, bid prefills SELL). LIMIT and STOP_LOSS only (the proxy rejects market orders), DAY/IOC validity, quantity in lots, price in ₹0.05 ticks. Accounts: **Paper** (executed locally) or **Dhan** (via your broker-proxy).
+- **Paper executor**: fills are priced from live ticks (LIMIT; STOP_LOSS is stop-limit). Orders are rejected outside 09:15–15:30 IST Mon–Fri unless `trading.paper_allow_off_hours` is true. Brokerage comes from the account's `brokeragePerOrder`. There is no margin check.
+- **Dhan**: one proxy session per account; live updates over the proxy WebSocket with `since` replay, orders de-duplicated by `correlationId`, and a periodic order-book resync. The contract's Dhan `securityId` comes from Dhan's public instrument CSV, cached in SQLite and refreshed daily (**Refresh instruments** in the ticket if a contract is missing).
+- **Ledger**: `orders` and `trades` tables in `kissa.db`. Positions are derived from trades (average cost) and are not stored. Charges are an estimate per fill: flat brokerage per order, STT, exchange fee, SEBI, stamp duty and GST.
+- **Prices**: a shared store fed by the chain engines, plus an automatic background stream for any symbol/expiry that has open positions or pending paper orders.
+- **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**.
+- **Dashboard**: per-account cards (realised, unrealised, charges, net today), open positions with live/last/none LTP badge, and the trader's diary (per-day orders, trades, realised, charges, net, expandable trades).
+- If an `orders` or `trades` table with an older layout exists, it is renamed to `<table>_legacy_<timestamp>` at startup rather than deleted.
 
 ### Greeks
 
@@ -57,7 +68,7 @@ pnpm tauri build    # release bundle
 
 ### Configuration
 
-`settings.json` is created on first run and may be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, and Fyers (`chain_url`, `poll_secs`, `strike_count`).
+`settings.json` is created on first run and may be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, Fyers (`chain_url`, `poll_secs`, `strike_count`) and `trading`: `paper_allow_off_hours`, `dhan_brokerage_per_order` (20), `dhan_brokerage_cap_pct`, `scrip_master_url`, `scrip_refresh_hours`, `request_timeout_secs`, `fallback_lot_sizes` (used only when Dhan's list has no entry) and `charges` (STT, exchange, SEBI, stamp duty, GST rates; verify against current rates).
 
 ## Layout
 
@@ -65,10 +76,13 @@ pnpm tauri build    # release bundle
 src/                     SvelteKit SPA (Svelte 5 runes)
   app.css                Tailwind + DaisyUI themes and all custom styling
   lib/columns.ts         option-chain column definitions
-  lib/components/        ChainTable, ColumnPicker, AccountForm
+  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel
+  lib/trading.svelte.ts  order-update / broker-status listeners, status helpers
   routes/                dashboard, chain, charts, orders, accounts
 src-tauri/src/
   market/                NSE http client, clock, symbols, WSS streamers (from kstocks_egui)
   chain/                 chain model, engine, Black-76 greeks, Fyers client, runner
+  charts/                bar recorder, store, indicators, backfill
+  trading/               orders, paper executor, Dhan proxy client, charges, ledger, price store
   accounts.rs secrets.rs db.rs settings.rs commands.rs
 ```

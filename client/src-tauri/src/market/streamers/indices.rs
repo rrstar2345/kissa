@@ -102,11 +102,17 @@ pub async fn run(
                     debug!("Indices idle poll error (expected outside market hours): {}", e);
                 }
 
-
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    config.market_runtime.idle_poll_interval_secs,
-                ))
-                .await;
+                // Wait out the poll interval in short slices so a switch to
+                // Active (supervisor tick, or a real tick seen by the poll)
+                // is picked up within a second instead of after the full wait.
+                let deadline = tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(config.market_runtime.idle_poll_interval_secs);
+                while tokio::time::Instant::now() < deadline {
+                    if session.mode().await == SessionMode::Active {
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
             }
         }
     }

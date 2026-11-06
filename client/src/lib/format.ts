@@ -25,3 +25,15 @@ export function trend(v: number | null | undefined): string {
   if (!v) return '';
   return v > 0 ? 'up' : 'down';
 }
+
+/** Today's IST date as YYYY-MM-DD (independent of the machine's time zone). */
+export function todayIst(): string {
+  return new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** HH:MM:SS (IST) from an RFC 3339 UTC timestamp. */
+export function istTime(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return dash;
+  return new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(11, 19);
+}

@@ -165,6 +165,13 @@
   .chain tbody tr:hover td:not(.strike) {
     background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
   }
+  .chain td.pick {
+    cursor: pointer;
+  }
+  .chain td.pick:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
   .chain td.oi-cell {
     background-repeat: no-repeat;
     background-size: var(--bar, 0%) 78%;

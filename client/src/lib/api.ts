@@ -3,14 +3,20 @@ import type {
   Account,
   BackfillResult,
   ChartData,
+  ContractInfo,
+  Dashboard,
+  DiaryDay,
   IndicatorSpec,
   InstrumentList,
   ExpiryItem,
   IndexTick,
   MarketStatus,
+  OrderRow,
+  PlaceOrderInput,
   SaveAccountInput,
   Source,
-  TestResult
+  TestResult,
+  TradeRow
 } from './types';
 
 export const api = {
@@ -35,7 +41,25 @@ export const api = {
   listAccounts: () => invoke<Account[]>('list_accounts'),
   saveAccount: (input: SaveAccountInput) => invoke<Account>('save_account', { input }),
   deleteAccount: (id: string) => invoke<void>('delete_account', { id }),
-  testAccount: (id: string) => invoke<TestResult>('test_account', { id })
+  testAccount: (id: string) => invoke<TestResult>('test_account', { id }),
+
+  placeOrder: (input: PlaceOrderInput) => invoke<OrderRow>('place_order', { input }),
+  cancelOrder: (id: string) => invoke<OrderRow>('cancel_order', { id }),
+  modifyOrder: (id: string, price: number, triggerPrice?: number) =>
+    invoke<OrderRow>('modify_order', { id, price, triggerPrice: triggerPrice ?? null }),
+  listOrders: (accountId?: string | null, date?: string | null) =>
+    invoke<OrderRow[]>('list_orders', { accountId: accountId ?? null, date: date ?? null }),
+  listTrades: (accountId?: string | null, date?: string | null) =>
+    invoke<TradeRow[]>('list_trades', { accountId: accountId ?? null, date: date ?? null }),
+  getDashboard: (accountId?: string | null) =>
+    invoke<Dashboard>('get_dashboard', { accountId: accountId ?? null }),
+  getDiary: (accountId: string | null, from: string, to: string) =>
+    invoke<DiaryDay[]>('get_diary', { accountId, from, to }),
+  contractInfo: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
+    invoke<ContractInfo>('contract_info', { symbol, expiry, strike, isCall }),
+  refreshInstruments: () => invoke<number>('refresh_instruments'),
+  connectBroker: (accountId: string) => invoke<void>('connect_broker', { accountId }),
+  syncOrders: (accountId: string) => invoke<number>('sync_orders', { accountId })
 };
 
 /** Read a JSON setting, returning `fallback` if unset or unparsable. */

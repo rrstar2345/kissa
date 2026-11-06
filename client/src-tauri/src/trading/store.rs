@@ -15,7 +15,37 @@ use super::charges;
 use super::{ist_date, now_ts, DiaryDay, OrderRow, TradeRow};
 use crate::settings::ChargesConfig;
 
+/// If `table` exists but lacks `trade_date` (a leftover from a different
+/// schema), rename it aside so the current schema can be created. Nothing is
+/// deleted; the old rows stay in `<table>_legacy_<unix-ts>`.
+async fn set_aside_stale(pool: &SqlitePool, table: &str) -> Result<()> {
+    let cols: Vec<(String,)> =
+        sqlx::query_as(AssertSqlSafe(format!("SELECT name FROM pragma_table_info('{table}')")))
+            .fetch_all(pool)
+            .await?;
+    if cols.is_empty() || cols.iter().any(|(n,)| n == "trade_date") {
+        return Ok(());
+    }
+    let new_name = format!("{table}_legacy_{}", Utc::now().timestamp());
+    tracing::warn!("table `{table}` has an old layout (no trade_date); renaming to `{new_name}`");
+    // Drop its indexes first: index names are global and would clash with ours.
+    let idx: Vec<(String,)> = sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '{table}' AND sql IS NOT NULL"
+    )))
+    .fetch_all(pool)
+    .await?;
+    for (name,) in idx {
+        sqlx::query(AssertSqlSafe(format!("DROP INDEX IF EXISTS \"{name}\""))).execute(pool).await?;
+    }
+    sqlx::query(AssertSqlSafe(format!("ALTER TABLE {table} RENAME TO {new_name}")))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn init(pool: &SqlitePool) -> Result<()> {
+    set_aside_stale(pool, "orders").await?;
+    set_aside_stale(pool, "trades").await?;
     let stmts = [
         r#"CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,

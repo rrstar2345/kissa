@@ -2,13 +2,29 @@
   import { tick } from 'svelte';
   import { COLUMNS } from '$lib/columns';
   import { num } from '$lib/format';
-  import type { ChainSnapshot, Leg } from '$lib/types';
+  import type { ChainSnapshot, Leg, Side, TicketRequest } from '$lib/types';
 
   let {
     snapshot,
     visible,
-    window: strikeWindow
-  }: { snapshot: ChainSnapshot; visible: string[]; window: number } = $props();
+    window: strikeWindow,
+    onpick
+  }: {
+    snapshot: ChainSnapshot;
+    visible: string[];
+    window: number;
+    onpick?: (r: Omit<TicketRequest, 'symbol' | 'expiry'>) => void;
+  } = $props();
+
+  // Clicking a bid / ask / LTP opens the order ticket: ask or LTP = BUY, bid = SELL.
+  const PICK: Record<string, Side> = { ask: 'BUY', ltp: 'BUY', bid: 'SELL' };
+
+  function pick(colId: string, leg: Leg, side: 'ce' | 'pe', strike: number) {
+    const s = PICK[colId];
+    if (!s || !onpick) return;
+    const v = colId === 'bid' ? leg.bid : colId === 'ask' ? leg.ask : leg.ltp;
+    onpick({ strike, isCall: side === 'ce', side: s, price: v ?? leg.ltp });
+  }
 
   // Call side reads outer → inner (LTP next to the strike); put side mirrors it.
   const cols = $derived(COLUMNS.filter((c) => visible.includes(c.id)));
@@ -78,6 +94,7 @@
       cls += ` oi-cell oi-${side}`;
       style = `--bar:${Math.round(((v ?? 0) / maxOi[side]) * 100)}%`;
     }
+    if (onpick && PICK[c.id]) cls += ' pick';
     return { text: c.fmt(v), cls, style };
   }
 
@@ -104,12 +121,12 @@
         <tr class:atm={r.strike === snapshot.atm}>
           {#each cols as c}
             {@const x = cell(c, r.ce, 'ce', r.strike)}
-            <td class="{x.cls} {itm('ce', r.strike) ? 'itm' : ''}" style={x.style}>{x.text}</td>
+            <td class="{x.cls} {itm('ce', r.strike) ? 'itm' : ''}" style={x.style} onclick={() => pick(c.id, r.ce, 'ce', r.strike)}>{x.text}</td>
           {/each}
           <td class="strike num">{num(r.strike, 0)}</td>
           {#each putCols as c}
             {@const x = cell(c, r.pe, 'pe', r.strike)}
-            <td class="{x.cls} {itm('pe', r.strike) ? 'itm' : ''}" style={x.style}>{x.text}</td>
+            <td class="{x.cls} {itm('pe', r.strike) ? 'itm' : ''}" style={x.style} onclick={() => pick(c.id, r.pe, 'pe', r.strike)}>{x.text}</td>
           {/each}
         </tr>
       {/each}

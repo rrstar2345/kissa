@@ -63,6 +63,9 @@ pub fn run() {
             let (cfg, session) = (config.clone(), state.session.clone());
             tauri::async_runtime::spawn(async move {
                 loop {
+                    // Decide the mode first (local clock until NSE time is known) so
+                    // the streamers don't wait on a slow NSE time request to start.
+                    session.tick(cfg.market_runtime.inactive_switch_after_secs).await;
                     market_clock::refresh_if_stale(&cfg).await;
                     session.tick(cfg.market_runtime.inactive_switch_after_secs).await;
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
