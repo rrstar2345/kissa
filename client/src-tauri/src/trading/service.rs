@@ -20,6 +20,7 @@ use super::charges;
 use super::dhan::{DhanConn, DhanEvent, Hub, ModifyBody, PlaceBody, ProxyOrder};
 use super::ltp::LtpStore;
 use super::paper::{self, Decision, Pending, PaperBook};
+use super::server::ServerAuth;
 use super::store::{self, Fill};
 use super::{
     ist_date, is_open_status, now_ts, scrip, today_ist, AccountSummary, BrokerStatus, ContractInfo, Dashboard,
@@ -30,7 +31,7 @@ use crate::charts::instrument::option_key;
 use crate::charts::recorder::in_session;
 use crate::market::market_clock;
 use crate::secrets;
-use crate::settings::AppConfig;
+use crate::settings::{AppConfig, ServerConfig};
 
 const IST_OFFSET_SECS: i64 = 5 * 3600 + 30 * 60;
 
@@ -64,6 +65,9 @@ pub struct TradingService {
     book: PaperBook,
     hub: Hub,
     dhan_tx: UnboundedSender<DhanEvent>,
+    /// Server (broker-proxy) connection; every order needs it to authenticate.
+    server: std::sync::RwLock<ServerConfig>,
+    server_auth: ServerAuth,
 }
 
 impl TradingService {
@@ -74,6 +78,8 @@ impl TradingService {
         app: AppHandle,
     ) -> (Arc<Self>, UnboundedReceiver<DhanEvent>) {
         let (dhan_tx, dhan_rx) = unbounded_channel();
+        let server = std::sync::RwLock::new(cfg.server.clone());
+        let server_auth = ServerAuth::new(cfg.trading.request_timeout_secs);
         let svc = Arc::new(Self {
             pool,
             cfg,
@@ -83,6 +89,8 @@ impl TradingService {
             book: PaperBook::default(),
             hub: Hub::default(),
             dhan_tx,
+            server,
+            server_auth,
         });
         (svc, dhan_rx)
     }
@@ -141,6 +149,35 @@ impl TradingService {
             Err(e) => warn!("Could not load open paper orders: {e}"),
         }
         self.refresh_watch();
+    }
+
+    // --------------------------------------------------------------- server ---
+
+    fn server_cfg(&self) -> ServerConfig {
+        self.server.read().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Apply new server details (after the user saved them) and drop the
+    /// cached server session.
+    pub async fn set_server(&self, cfg: ServerConfig) {
+        if let Ok(mut s) = self.server.write() {
+            *s = cfg;
+        }
+        self.server_auth.reset().await;
+    }
+
+    /// Every order (paper or live) is placed only for a client the server
+    /// authenticates.
+    async fn require_server_auth(&self) -> Result<()> {
+        self.server_auth.verify(&self.server_cfg()).await
+    }
+
+    /// Check the saved server details and API key (used by the Test button).
+    pub async fn test_server(&self) -> Result<String> {
+        self.server_auth.reset().await;
+        let cfg = self.server_cfg();
+        self.server_auth.verify(&cfg).await?;
+        Ok(format!("Connected to {} and the API key was accepted.", cfg.base_url().unwrap_or_default()))
     }
 
     // ------------------------------------------------------------ contracts ---
@@ -251,6 +288,9 @@ impl TradingService {
         if symbol.is_empty() {
             return Err(anyhow!("Symbol is required"));
         }
+
+        // No order of any kind (paper included) without an authenticated server.
+        self.require_server_auth().await?;
 
         let acct = accounts::get(&self.pool, &input.account_id).await?;
         if acct.kind != "paper" && acct.kind != "dhan" {
@@ -729,6 +769,7 @@ impl TradingService {
         if o.filled_qty > 0 {
             return Err(anyhow!("A partly filled order cannot be modified; cancel the rest instead"));
         }
+        self.require_server_auth().await?;
 
         if o.account_kind == "paper" {
             o.price = price;

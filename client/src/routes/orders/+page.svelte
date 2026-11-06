@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import ExitButton from '$lib/components/ExitButton.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
   import { contractName, isOpen, statusClass, trading } from '$lib/trading.svelte';
   import type { Account, OrderRow, Position, TradeRow } from '$lib/types';
@@ -229,7 +230,7 @@
     <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
       <table class="table table-sm">
         <thead>
-          <tr><th>Account</th><th>Contract</th><th>Product</th><th class="text-right">Net qty</th><th class="text-right">Avg</th><th class="text-right">LTP</th><th class="text-right">Unrealised</th></tr>
+          <tr><th>Account</th><th>Contract</th><th>Product</th><th class="text-right">Net qty</th><th class="text-right">Avg</th><th class="text-right">LTP</th><th class="text-right">Unrealised</th><th></th></tr>
         </thead>
         <tbody>
           {#each positions as p (p.accountId + p.instrument + p.product)}
@@ -244,9 +245,10 @@
                 <span class="badge badge-xs {p.ltpSource === 'live' ? 'badge-success' : 'badge-ghost'}">{p.ltpSource}</span>
               </td>
               <td class="num text-right {trend(p.unrealised)}">{signed(p.unrealised)}</td>
+              <td class="text-right"><ExitButton position={p} ondone={load} /></td>
             </tr>
           {:else}
-            <tr><td colspan="7" class="py-8 text-center text-base-content/60">No open positions.</td></tr>
+            <tr><td colspan="8" class="py-8 text-center text-base-content/60">No open positions.</td></tr>
           {/each}
         </tbody>
       </table>

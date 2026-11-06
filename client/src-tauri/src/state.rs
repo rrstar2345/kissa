@@ -7,13 +7,14 @@ use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
 use crate::market::market_clock::SharedSessionState;
 use crate::market::symbols::FnoIndex;
-use crate::settings::AppConfig;
+use crate::settings::{AppConfig, AppPaths};
 use crate::stats::SharedStats;
 use crate::trading::ltp::LtpStore;
 use crate::trading::service::TradingService;
 
 pub struct AppState {
     pub config: AppConfig,
+    pub paths: AppPaths,
     pub db: SqlitePool,
     pub stats: SharedStats,
     pub session: SharedSessionState,

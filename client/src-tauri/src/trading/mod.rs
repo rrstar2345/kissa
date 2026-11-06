@@ -10,6 +10,7 @@ pub mod feed;
 pub mod ltp;
 pub mod paper;
 pub mod scrip;
+pub mod server;
 pub mod service;
 pub mod store;
 

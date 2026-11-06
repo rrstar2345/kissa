@@ -41,6 +41,7 @@ pub fn run() {
                 trading::service::TradingService::new(pool.clone(), config.clone(), ltp.clone(), app.handle().clone());
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
+                paths: paths.clone(),
                 db: pool.clone(),
                 stats: stats::new_shared_stats(),
                 session: market_clock::new_shared_session_state(),
@@ -129,6 +130,11 @@ pub fn run() {
             commands::refresh_instruments,
             commands::connect_broker,
             commands::sync_orders,
+            commands::get_settings_json,
+            commands::save_settings_json,
+            commands::get_server_settings,
+            commands::save_server_settings,
+            commands::test_server,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

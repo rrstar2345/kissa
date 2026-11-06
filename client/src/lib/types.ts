@@ -329,3 +329,9 @@ export interface TicketRequest {
   side: Side;
   price: number | null;
 }
+
+export interface ServerSettings {
+  url: string;
+  port: number;
+  apiKeySet: boolean;
+}

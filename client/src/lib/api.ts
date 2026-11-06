@@ -14,6 +14,7 @@ import type {
   OrderRow,
   PlaceOrderInput,
   SaveAccountInput,
+  ServerSettings,
   Source,
   TestResult,
   TradeRow
@@ -59,7 +60,14 @@ export const api = {
     invoke<ContractInfo>('contract_info', { symbol, expiry, strike, isCall }),
   refreshInstruments: () => invoke<number>('refresh_instruments'),
   connectBroker: (accountId: string) => invoke<void>('connect_broker', { accountId }),
-  syncOrders: (accountId: string) => invoke<number>('sync_orders', { accountId })
+  syncOrders: (accountId: string) => invoke<number>('sync_orders', { accountId }),
+
+  getSettingsJson: () => invoke<string>('get_settings_json'),
+  saveSettingsJson: (json: string) => invoke<void>('save_settings_json', { json }),
+  getServerSettings: () => invoke<ServerSettings>('get_server_settings'),
+  saveServerSettings: (url: string, port: number, apiKey?: string) =>
+    invoke<ServerSettings>('save_server_settings', { url, port, apiKey: apiKey || null }),
+  testServer: () => invoke<TestResult>('test_server')
 };
 
 /** Read a JSON setting, returning `fallback` if unset or unparsable. */

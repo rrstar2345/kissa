@@ -11,8 +11,9 @@ KISSA streams option prices, lets you place orders through your own [`broker-pro
 | Accounts (paper, Dhan, broker-proxy, Fyers data) | ✅ Phase 1 |
 | Option chain (NSE live stream / Fyers polling, IV + Greeks, configurable columns) | ✅ Phase 1 |
 | Charts (lightweight-charts, stored 1m/daily bars, Rust-computed indicators + signals, Fyers backfill) | ✅ Phase 2 |
-| Orders (broker-proxy REST + WSS, paper fills, local order log) | ✅ Phase 3 (compiles and runs; never exercised against live Dhan/proxy) |
+| Orders (broker-proxy REST + WSS, paper fills, local order log) | ✅ Phase 3 (paper verified; never exercised against live Dhan/proxy) |
 | Dashboard (live P&L, trader's diary) | ✅ Phase 3 |
+| Exit button, Settings page (server connection, `settings.json` editor), order gate | ✅ Done |
 
 ## Data sources
 
@@ -37,22 +38,36 @@ Choose the source on the Option Chain page or under **Accounts → Market data s
 - **Prices**: a shared store fed by the chain engines, plus an automatic background stream for any symbol/expiry that has open positions or pending paper orders.
 - **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**.
 - **Dashboard**: per-account cards (realised, unrealised, charges, net today), open positions with live/last/none LTP badge, and the trader's diary (per-day orders, trades, realised, charges, net, expandable trades).
+- **Exit**: open positions have an **Exit** button (Orders and Dashboard). It places a LIMIT order for the full quantity at the LTP (rounded to ₹0.05): SELL for a long position, BUY for a short one, same product, DAY validity. It asks for confirmation first and is disabled when there is no LTP.
+- **Server authentication (order gate)**: no order (paper or Dhan), and no modify, is accepted unless the server in `server` (see Configuration) accepts the API key. The key is checked on every order using a cached `paper` session on the proxy (`GET /v1/orders`), so a revoked or wrong key is caught immediately. Cancel is not gated. The proxy must therefore be reachable even for paper trading; for development run it locally (`http://localhost:<port>` is allowed) with a key from `proxy keygen`.
 - If an `orders` or `trades` table with an older layout exists, it is renamed to `<table>_legacy_<timestamp>` at startup rather than deleted.
 
 ### Greeks
 
 Fyers supplies IV/Greeks. For NSE they are computed in Rust from LTP: Black-76 priced off a forward derived from put-call parity at ATM (no dividend assumption), r = 7% (`risk_free_rate`), time measured to 15:30 IST on expiry. Theta is per calendar day, vega per 1 vol point. NSE's stream may not include OI change, so *OI Chg* is measured from the first OI seen in the session unless NSE provides it.
 
+## Roadmap
+
+Paper trading is being hardened first so a real broker can be switched in later with minimal change. Planned, in rough order:
+
+1. **Broker interface and paper fidelity**: one interface for paper and Dhan; paper margin check, day-end auto square-off, expiry settlement, bracket (stop/target) orders, Exit All.
+2. **Signal rules**: configurable indicator rules (e.g. RSI(14) crossing its EMA(9) with price above SMA(20) and SMA(50)) producing buy/sell signals on charts.
+3. **Alerts**: Telegram bot and email.
+4. **Risk controls**: daily loss limit, size and position limits, kill switch.
+5. **Trade copier**: master account replicating to child accounts with a lot factor.
+6. **Algo trading**: autonomous orders from rules (paper first).
+7. **Backtesting** of rules on stored bars.
+
 ## Security model
 
-- **Secrets** (Dhan access token, proxy API key, Fyers token) are stored **only in the OS keychain** (macOS Keychain, Windows Credential Manager, Secret Service on Linux). They are never written to SQLite or `settings.json`, and the UI never receives them back.
+- **Secrets** (Dhan access token, proxy API key, the server API key from Settings, Fyers token) are stored **only in the OS keychain** (macOS Keychain, Windows Credential Manager, Secret Service on Linux). They are never written to SQLite or `settings.json`, and the UI never receives them back.
 - **SQLite** (`kissa.db`) holds non-secret account fields, preferences (columns, theme, symbol) and, in later phases, the order log and diary.
 - **Proxy URL must be `https://`** (plain `http://` is accepted for `localhost` only). The proxy keeps credentials in memory per session and persists nothing; the client is the system of record.
 - Data lives in `<local data dir>/.kissa/` (`kissa.db`, `settings.json`).
 
 ## Broker-proxy
 
-Configure under **Accounts → Broker-proxy** (URL, API key from `proxy keygen`, whitelisted static IP for reference). **Test** checks `/healthz`, then opens and closes a `paper` session to validate the API key. A **Dhan** account links to a proxy and **Test** opens and closes a real Dhan session through it. See the [broker-proxy README](../broker-proxy/README.md) for the API contract.
+The order gate uses the server set under **Settings → Server connection**. Dhan accounts link to a proxy configured under **Accounts → Broker-proxy** (URL, API key from `proxy keygen`, whitelisted static IP for reference). Both can point at the same server. **Test** checks `/healthz`, then opens and closes a `paper` session to validate the API key. A **Dhan** account links to a proxy and **Test** opens and closes a real Dhan session through it. See the [broker-proxy README](../broker-proxy/README.md) for the API contract.
 
 ## Development
 
@@ -68,7 +83,9 @@ pnpm tauri build    # release bundle
 
 ### Configuration
 
-`settings.json` is created on first run and may be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, Fyers (`chain_url`, `poll_secs`, `strike_count`) and `trading`: `paper_allow_off_hours`, `dhan_brokerage_per_order` (20), `dhan_brokerage_cap_pct`, `scrip_master_url`, `scrip_refresh_hours`, `request_timeout_secs`, `fallback_lot_sizes` (used only when Dhan's list has no entry) and `charges` (STT, exchange, SEBI, stamp duty, GST rates; verify against current rates).
+**Settings page**: edit `settings.json` in the app, and set the **Server connection** (URL, port, API key). URL and port are stored in `settings.json` under `server` (`url`, `port`; https required except localhost; the port is appended unless the URL has one). The API key is stored in the OS keychain, not in the file. Server changes apply immediately; other settings are read at startup, so restart the app after changing them.
+
+`settings.json` is created on first run and may also be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, Fyers (`chain_url`, `poll_secs`, `strike_count`) and `trading`: `paper_allow_off_hours`, `dhan_brokerage_per_order` (20), `dhan_brokerage_cap_pct`, `scrip_master_url`, `scrip_refresh_hours`, `request_timeout_secs`, `fallback_lot_sizes` (used only when Dhan's list has no entry) and `charges` (STT, exchange, SEBI, stamp duty, GST rates; verify against current rates).
 
 ## Layout
 
@@ -76,13 +93,13 @@ pnpm tauri build    # release bundle
 src/                     SvelteKit SPA (Svelte 5 runes)
   app.css                Tailwind + DaisyUI themes and all custom styling
   lib/columns.ts         option-chain column definitions
-  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel
+  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel, ExitButton
   lib/trading.svelte.ts  order-update / broker-status listeners, status helpers
-  routes/                dashboard, chain, charts, orders, accounts
+  routes/                dashboard, chain, charts, orders, accounts, settings
 src-tauri/src/
   market/                NSE http client, clock, symbols, WSS streamers (from kstocks_egui)
   chain/                 chain model, engine, Black-76 greeks, Fyers client, runner
   charts/                bar recorder, store, indicators, backfill
-  trading/               orders, paper executor, Dhan proxy client, charges, ledger, price store
+  trading/               orders, paper executor, Dhan proxy client, server auth (order gate), charges, ledger, price store
   accounts.rs secrets.rs db.rs settings.rs commands.rs
 ```

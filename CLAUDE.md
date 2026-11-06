@@ -2,15 +2,20 @@
 
 ## Working preferences (from the user)
 - Keep answers concise and to the point.
-- Do NOT create extra documents (summaries, quick references, etc.) unless asked; confirm first. README.md updates for the client are expected.
+- Do NOT create extra documents (summaries, quick references, etc.) unless asked; confirm first. Updating `CLAUDE.md` and the client `README.md` is expected when the user asks.
 - Ask clarifying questions with options plus a recommendation before big work.
-- When finished: zip all edited/created files and present the zip.
+- **Do not install Rust/Cargo in the sandbox, and do not compile.** The user builds and tests manually. Verify the frontend only (`pnpm check`, `pnpm build`), and re-read Rust carefully since it cannot be compiled here.
+- When finished: present the edited/created files; zip them if there are more than 5 files.
 
 ## Repos
 - `https://github.com/rrstar2345/kissa.git` has `client/` (Tauri v2 app, the thing being built) and `broker-proxy/` (Go order proxy, already written; do not modify unless asked).
-- `https://github.com/rrstar2345/kstocks_egui` is a reference-only older egui app. Source for NSE streaming, storage, OHLC aggregation, backfill.
-- Fyers option chain docs: https://fyers.in/api-docs/v3/api/market-data/option-chain/ (web_fetch). For phase 2 also fetch the Historical Data page.
-- Phase 1 was delivered as a zip of changed files under `client/`. **Before starting, confirm the user has unzipped it over the repo and pushed it.** If the clone has no `client/src/lib` or `client/src-tauri/src/chain`, ask the user for the zip.
+- `https://github.com/rrstar2345/kstocks_egui` is a reference-only older egui app (NSE streaming, storage, OHLC aggregation).
+- Fyers option chain docs: https://fyers.in/api-docs/v3/api/market-data/option-chain/ (web_fetch). For history/backfill also fetch the Historical Data page.
+
+## Current focus
+The user has **not yet set up** the Oracle Cloud VPS, static IP, port rules, Dhan account/IP whitelisting/app credentials, or a Fyers account/API subscription. Nothing involving a real broker or Fyers can be validated yet. **Strategy: harden the core product with paper trading first**, so switching to a real broker later is a minor change (see Roadmap: keep one broker interface; paper must behave like a real broker).
+
+For development without a VPS: run `broker-proxy` locally (`http://localhost:<port>` is allowed), generate a key with `proxy keygen`, and enter it under Settings > Server connection. Paper orders require this (see Order gate).
 
 ## Product
 Stock/options trading desktop app (Tauri v2: Rust backend + SvelteKit/Svelte 5 + Tailwind v4 + DaisyUI 5). Shows option prices from NSE public API (default) or Fyers (user's own creds). Places orders via the user's `broker-proxy` (Go, static-IP VM) which fronts Dhan. **All credentials, order log and account details stay client-side.**
@@ -20,11 +25,18 @@ Components: (1) Accounts, (2) Option chain, (3) Charts (lightweight-charts, mult
 Decisions made: phased build; secrets in OS keychain (`keyring`), everything else in SQLite (`sqlx`); proxy contract = the broker-proxy README.
 
 ## Status
-| Phase | Scope | State |
-|---|---|---|
-| 1 | Foundation, Accounts, Option chain | Done (compiles, 5 unit tests pass, frontend builds; **never run live**) |
-| 2 | Charts + OHLC storage + indicators + Fyers backfill | Written, **not compiled or run** (no Rust in sandbox); see Phase 2 notes |
-| 3 | Orders + Dashboard/diary | Backend and frontend written; compiles and runs (user-verified). **Never run against live Dhan/proxy**; see Phase 3 notes |
+| Area | State |
+|---|---|
+| Phase 1: foundation, accounts, option chain | Done, user-verified |
+| Phase 2: charts, OHLC storage, indicators, Fyers backfill | Written and compiling; Fyers backfill never run live |
+| Phase 3: orders, paper executor, Dhan via proxy, dashboard/diary | Compiles and runs for paper (user-verified). **Dhan/proxy order flow never run live** |
+| Enhancements: Exit button, Settings page, server connection, order gate | Done, user-tested (Nov 2026) |
+
+## Enhancements delivered after Phase 3
+- **Exit button** (`lib/components/ExitButton.svelte`, used on Orders > Positions and Dashboard): confirm dialog, then `place_order` with the opposite side, full quantity, LIMIT at LTP rounded to 0.05, same product, DAY. Disabled without LTP or when qty is not a whole number of lots.
+- **Settings page** (`routes/settings`): Server connection form (URL, port, API key; Save, Test connection) and an in-app `settings.json` editor (Format, Revert, Save). Commands: `get_settings_json, save_settings_json, get_server_settings, save_server_settings, test_server`. Saving writes atomically (tmp file + rename), validates by parsing into `AppConfig`, and drops keys not in the struct. **Only the `server` section applies live**; `AppState.config` and `TradingService.cfg` are immutable, so everything else needs an app restart.
+- **Server config**: `settings.json` `server {url, port}` (`ServerConfig` in `settings.rs`; `base_url()` enforces https except localhost and appends `port` unless the URL has a port or path). The API key is in the keychain (account id `server`, field `apiKey`), not in the file. This is separate from `proxy` accounts, which Dhan accounts still use.
+- **Order gate** (`trading/server.rs`, `ServerAuth`): `TradingService::place` and `modify` call `require_server_auth()` before touching the DB. It keeps one cached `paper` session on the proxy and re-validates it with `GET /v1/orders` on every call (401 = key rejected; 404 = session lost, reopen). So **paper orders are only accepted for a client the proxy authenticates**. Cancel is not gated. Settings changes call `set_server`, which drops the cached session (the old one idles out on the server).
 
 ## Phase 1 architecture (client/)
 Frontend `src/`: `app.css` (all theme/styles; themes `kissa-dark`/`kissa-light`; up=`success`, down=`error`), `lib/api.ts` (typed invoke wrappers + `getJson/setJson` pref helpers), `lib/types.ts`, `lib/columns.ts` (chain column defs), `lib/market.svelte.ts` (status + index ticks store), `lib/theme.svelte.ts`, `lib/components/{ChainTable,ColumnPicker,AccountForm,ComingSoon}.svelte`, routes `/`, `/chain`, `/charts`, `/orders`, `/accounts` (dashboard/charts/orders are `ComingSoon` placeholders).
@@ -49,12 +61,6 @@ Backend `src-tauri/src/`:
 ## Phase 2 notes (as built)
 Decisions: persist indices + option strikes within ±20 of ATM of the streamed chain; Fyers backfill included; full indicator set. Deviation from the plan: no raw tick tables; ticks are folded into 1m bars in memory (`charts/recorder.rs`) and upserted to one `bars(instrument, tf, ts)` table (`charts/store.rs`). Instrument keys: `IDX:NIFTY 50`, `OPT:NIFTY:2026-11-24:24000:CE`. Other modules: `charts/{resample,indicators,backfill,instrument}.rs`; commands `get_chart, list_chart_instruments, backfill_chart`; event `bar-update`; frontend `routes/charts`, `lib/components/{ChartPanel,InstrumentPicker}.svelte`, `lib/charts.ts`; settings key `charts.layout`; config section `charts` + `fyers.history_url` in settings.json. Unverified: Fyers history URL/`oi_flag`, Fyers option symbol formats (weekly vs monthly guess), daily-candle timestamps (normalised to IST day), lightweight-charts pane APIs at runtime. Also fixed: options WSS 403 (now uses the cookie-warmed `connect_nse_ws`).
 
-## Phase 2 plan (original proposal)
-1. Port tick persistence + 1m/daily OHLC aggregation + retention into the client (SQLite via sqlx). Hook it to the index sink and to the option engine (currently nothing is persisted).
-2. Tauri commands to fetch bars (index and option strike CE/PE, with interval resampling); optional Fyers historical backfill.
-3. Indicators in Rust (EMA/SMA, RSI, MACD, Bollinger, VWAP, Supertrend) returning series plus buy/sell signal markers; keep the module pluggable.
-4. Frontend: `lightweight-charts` panels, multiple per page, layouts saved in a `layouts` table (or settings JSON), live updates from tick events.
-
 ## Phase 3 notes (as built)
 Decisions: Dhan `securityId` from Dhan's instrument CSV (cached in table `scrip`, refreshed daily); global `LtpStore` fed by chain engines plus a background feed (`trading/feed.rs`) for symbols with open positions or pending paper orders; full charge estimate with rates in `settings.json` under `trading.charges`; order entry by clicking bid/ask/LTP on the chain (ticket drawer).
 Backend `src-tauri/src/trading/`: `mod.rs` (types, camelCase serde), `ltp.rs`, `charges.rs`, `scrip.rs`, `store.rs` (tables `orders`, `trades`; positions folded from trades by average cost; a stale `orders`/`trades` table without `trade_date` is renamed `*_legacy_<ts>` at startup), `paper.rs`, `dhan.rs` (proxy REST + WSS with `since` replay), `service.rs` (`TradingService`), `feed.rs`.
@@ -72,15 +78,10 @@ Chain/index fixes made after first run: ATM now comes only from the real index p
 - `last_close` position fallback reads `bars`; confirm the instrument key matches what the recorder stores.
 - Order ticket shows no live price; price field holds the clicked value.
 
-## Phase 3 plan (original proposal)
-Rust `broker` client trait with `ProxyDhan` (REST + WSS with `since` replay, correlationId generation, no market orders) and a local `Paper` executor (fills priced from live ticks, brokerage from account meta). Tables: orders/order log, trades, positions, charges. Orders page (LIMIT/SL only, tied to option-chain strike clicks). Dashboard: live P&L from open positions plus LTP, trader's diary with charges and realised P&L.
-
-## Dev environment notes (sandbox and user)
-- User needs Rust 1.94+ (sqlx 0.9; same as kstocks). Sandbox has only apt Rust: `apt-get update`, then `rustc-1.91 cargo-1.91`, `export PATH=/usr/lib/rust-1.91/bin:$PATH`, and compile with `--ignore-rust-version`. Tauri Linux libs needed: `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev libdbus-1-dev libsecret-1-dev pkg-config build-essential`. `pnpm` via `npm i -g pnpm`.
-- First `cargo check` takes about 6 min and `cargo test` about 10; launch with `setsid nohup cargo ... > /tmp/x.log 2>&1 < /dev/null &` and poll (plain `nohup &` dies when the tool call returns).
-- Sandbox network cannot reach nseindia.com or fyers; live streaming cannot be tested there. Unit-test engines and parsers with fixtures instead.
-- Verify with: `pnpm check`, `pnpm build`, `cd src-tauri && cargo test --lib`.
-- Zip only edited/created files (`git status --porcelain --untracked-files=all`, excluding `node_modules`), then present the zip.
+## Dev environment notes
+- The user has Rust 1.94+ (sqlx 0.9) and builds with `pnpm tauri dev` / `cargo test --lib`. The sandbox does **not** build Rust (user preference). Verify the frontend with `npm i -g pnpm`, `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build` in `client/`.
+- Sandbox network cannot reach nseindia.com or Fyers; live streaming cannot be tested there. Prefer unit tests with fixtures for engines and parsers (the user runs them).
+- Zip only edited/created files: `git status --porcelain --untracked-files=all | grep -v node_modules`.
 
 ## Known gaps and unverified assumptions
 - Never run against live NSE/Fyers/proxy/keychain; expect first-run fixes.
@@ -93,3 +94,25 @@ Rust `broker` client trait with `ProxyDhan` (REST + WSS with `since` replay, cor
 - Background feed assumes NSE expiry label format `DD-Mon-YYYY`.
 - Charges rates (e.g. STT 0.15% on option sell premium) and lot sizes (NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120, NIFTYNXT50 25) are estimates as of Nov 2026; verify.
 - Unused template assets remain in `client/static/` (vite/svelte/tauri svgs).
+- Settings other than `server` need a restart. The settings editor rewrites the file from `AppConfig`, so unknown keys are dropped.
+- The order gate makes a proxy round trip per order/modify, and the proxy must be up even for paper trading.
+- Exit places a LIMIT at LTP, which may not fill if price moves; there is no market order by design.
+
+## Roadmap (not started; user's items first, then suggestions)
+Suggested build order: 0, then 1, 4, 5 (risk), 2, 3. Confirm scope with the user before starting each; ask with options plus a recommendation.
+
+**0. Foundation: broker interface and paper fidelity (suggested first).** Put paper and Dhan behind one trait so placing/modifying/cancelling/state sync go through the same path, and make paper behave like a real broker: margin/capital check, INTRADAY auto square-off at day end, expiry settlement, optional slippage/latency, stop-loss/target (bracket/OCO) orders, order ticket live price, Exit All. Switching to a real broker later should then be config plus verification.
+
+**1. Configurable signal rules (user).** Rules, defined in the UI and stored in SQLite, that produce buy/sell signals on charts. Example: BUY when RSI(14) crosses above its own EMA(9) and price > SMA(20) and price > SMA(50); SELL when RSI(14) crosses below its EMA(9). Design notes: a rule is a JSON condition tree (operands = indicator series with params or price; operators `crosses_above`, `crosses_below`, `>`, `<`; AND/OR) per instrument and interval, evaluated on bar close. `charts/indicators.rs` needs **indicators of indicators** (EMA of RSI) and a generic series-reference model. Signals should appear on charts, and the same engine should feed alerts and algos (items 3 and 4), so build it as a reusable rule engine, not chart-only code.
+
+**2. Trade copier (user).** One master account, N child accounts, each with a factor (lot multiplier plus rounding rule, e.g. round down, minimum 1 lot or skip). A master execution replicates to children. Decide with the user: replicate on master order placement or on fill (recommend on fill), how modify/cancel propagate, behaviour when a child is rejected (continue others, alert), and per-child enable/disable. Children may be paper or Dhan and each child order must pass the order gate and risk checks. Keep a link table master order to child orders for the diary.
+
+**3. Algo trading (user).** Autonomous orders from rules (item 1) with an action (side, product, lots, price rule, exit rule via stop/target). Needs arm/disarm per algo, paper-only until explicitly promoted, an event journal of every decision, and the risk controls in item 5. Limitation to state: the app must stay running (desktop app); no headless mode yet.
+
+**4. Alerts (user).** Telegram bot (bot token in keychain, one or more chat ids) and email (SMTP, password in keychain). Events: signals, fills, rejections, algo actions, copier failures, connection loss, token expiry, daily P&L summary. Needs per-event toggles, throttling/de-duplication, and a test button.
+
+**5. Risk controls (suggested, needed before 2 and 3).** Max daily loss (with auto-disarm of algos and optional square-off), max lots per order, max open positions, allowed trading window, and a global kill switch. Apply in `TradingService::place` so every path (manual, copier, algo) is covered.
+
+**6. Backtesting (suggested).** Run a rule/algo over stored 1m/daily bars (Fyers backfill helps) and report trades, P&L after estimated charges, win rate, max drawdown. Lets rules be validated before arming.
+
+**7. Smaller items (suggested).** Event/audit journal; CSV export of orders/trades/diary and a DB backup button; reminders for daily Fyers/Dhan token expiry; live-reload of non-server settings; tighten `tauri.conf.json` CSP before release; unit tests for `ServerConfig::base_url` and exit-order maths; remove unused template assets.

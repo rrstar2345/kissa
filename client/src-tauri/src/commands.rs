@@ -299,3 +299,76 @@ pub async fn connect_broker(account_id: String, state: State<'_, SharedState>) -
 pub async fn sync_orders(account_id: String, state: State<'_, SharedState>) -> Res<usize> {
     state.trading.sync_dhan(&account_id).await.map_err(err)
 }
+
+// ------------------------------------------------- settings.json / server ---
+
+use crate::settings::{self, ServerConfig};
+use crate::trading::server as server_auth;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerSettings {
+    pub url: String,
+    pub port: u16,
+    pub api_key_set: bool,
+}
+
+fn server_settings(cfg: &ServerConfig) -> ServerSettings {
+    ServerSettings { url: cfg.url.clone(), port: cfg.port, api_key_set: server_auth::api_key_set() }
+}
+
+/// The settings file as editable JSON.
+#[tauri::command]
+pub fn get_settings_json(state: State<'_, SharedState>) -> Res<String> {
+    settings::read_settings_json(&state.paths)
+}
+
+/// Validate and save the whole settings file. The server section applies
+/// immediately; everything else is read at startup, so restart the app.
+#[tauri::command]
+pub async fn save_settings_json(json: String, state: State<'_, SharedState>) -> Res<()> {
+    let cfg = settings::write_settings_json(&state.paths, &json)?;
+    state.trading.set_server(cfg.server).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_server_settings(state: State<'_, SharedState>) -> Res<ServerSettings> {
+    let json = settings::read_settings_json(&state.paths)?;
+    let cfg: settings::AppConfig = serde_json::from_str(&json).map_err(err)?;
+    Ok(server_settings(&cfg.server))
+}
+
+/// Save the server URL/port to settings.json and the API key to the OS
+/// keychain. A blank `api_key` keeps the stored key.
+#[tauri::command]
+pub async fn save_server_settings(
+    url: String,
+    port: u16,
+    api_key: Option<String>,
+    state: State<'_, SharedState>,
+) -> Res<ServerSettings> {
+    let server = ServerConfig { url: url.trim().to_string(), port };
+    if server.is_set() {
+        server.base_url()?;
+    }
+    let json = settings::read_settings_json(&state.paths)?;
+    let mut cfg: settings::AppConfig = serde_json::from_str(&json).map_err(err)?;
+    cfg.server = server.clone();
+    let json = serde_json::to_string_pretty(&cfg).map_err(err)?;
+    settings::write_settings_json(&state.paths, &json)?;
+    if let Some(k) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        crate::secrets::set(server_auth::KEY_ACCOUNT, server_auth::KEY_FIELD, k).map_err(err)?;
+    }
+    state.trading.set_server(server.clone()).await;
+    Ok(server_settings(&server))
+}
+
+/// Check the saved server details: reachable and the API key accepted.
+#[tauri::command]
+pub async fn test_server(state: State<'_, SharedState>) -> Res<TestResult> {
+    Ok(match state.trading.test_server().await {
+        Ok(message) => TestResult { ok: true, message },
+        Err(e) => TestResult { ok: false, message: e.to_string() },
+    })
+}

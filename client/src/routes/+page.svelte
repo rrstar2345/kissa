@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import ExitButton from '$lib/components/ExitButton.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
   import { contractName, trading } from '$lib/trading.svelte';
   import type { Dashboard, DiaryDay } from '$lib/types';
@@ -110,7 +111,7 @@
       <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
         <table class="table table-sm">
           <thead>
-            <tr><th>Account</th><th>Contract</th><th>Product</th><th class="text-right">Net qty</th><th class="text-right">Avg</th><th class="text-right">LTP</th><th class="text-right">Unrealised</th></tr>
+            <tr><th>Account</th><th>Contract</th><th>Product</th><th class="text-right">Net qty</th><th class="text-right">Avg</th><th class="text-right">LTP</th><th class="text-right">Unrealised</th><th></th></tr>
           </thead>
           <tbody>
             {#each dash.positions as p (p.accountId + p.instrument + p.product)}
@@ -125,6 +126,7 @@
                   <span class="badge badge-xs {p.ltpSource === 'live' ? 'badge-success' : 'badge-ghost'}" title={p.ltpSource === 'last' ? 'Last stored bar; no live price' : ''}>{p.ltpSource}</span>
                 </td>
                 <td class="num text-right font-semibold {trend(p.unrealised)}">{signed(p.unrealised)}</td>
+                <td class="text-right"><ExitButton position={p} ondone={loadDash} /></td>
               </tr>
             {/each}
           </tbody>

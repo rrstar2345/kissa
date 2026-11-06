@@ -8,6 +8,7 @@ use tracing::{error, info};
 
 pub const APP_NAME: &str = "kissa";
 
+#[derive(Clone)]
 pub struct AppPaths {
     pub root: PathBuf,
     pub db_file: PathBuf,
@@ -202,6 +203,58 @@ impl Default for TradingConfig {
     }
 }
 
+/// The user's broker-proxy server. Every order, paper included, requires the
+/// server to accept the API key. The API key itself lives in the OS keychain
+/// (account id `server`, field `apiKey`), never in this file.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// e.g. `https://proxy.example.com` (a port may be included here).
+    pub url: String,
+    /// Appended to `url` when it has no port of its own. 0 = none.
+    pub port: u16,
+}
+
+impl ServerConfig {
+    pub fn is_set(&self) -> bool {
+        !self.url.trim().is_empty()
+    }
+
+    /// Check the URL and return the full base URL (scheme, host, port).
+    pub fn base_url(&self) -> Result<String, String> {
+        let url = self.url.trim().trim_end_matches('/').to_string();
+        if url.is_empty() {
+            return Err("Server URL is required".into());
+        }
+        let lower = url.to_lowercase();
+        let rest = if let Some(r) = lower.strip_prefix("https://") {
+            r
+        } else if lower.strip_prefix("http://").is_some() {
+            let local = lower.contains("://localhost") || lower.contains("://127.0.0.1");
+            if !local {
+                return Err("Server URL must use https:// (the API key travels in requests); plain http is only allowed for localhost".into());
+            }
+            &lower["http://".len()..]
+        } else {
+            return Err("Server URL must start with https://".into());
+        };
+        let authority = rest.split('/').next().unwrap_or("");
+        if authority.is_empty() {
+            return Err("Server URL has no host".into());
+        }
+        // A port is already present when the authority ends in `:digits`.
+        let has_port = authority
+            .rsplit_once(':')
+            .map(|(_, p)| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or(false);
+        if has_port || self.port == 0 || url[url.find("://").unwrap_or(0) + 3..].contains('/') {
+            Ok(url)
+        } else {
+            Ok(format!("{url}:{}", self.port))
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct AppConfig {
@@ -210,6 +263,7 @@ pub struct AppConfig {
     pub fyers: FyersConfig,
     pub charts: ChartsConfig,
     pub trading: TradingConfig,
+    pub server: ServerConfig,
     /// Annualised risk-free rate used for Greeks/IV (decimal, 0.07 = 7%).
     pub risk_free_rate: f64,
 }
@@ -222,6 +276,7 @@ impl Default for AppConfig {
             fyers: FyersConfig::default(),
             charts: ChartsConfig::default(),
             trading: TradingConfig::default(),
+            server: ServerConfig::default(),
             risk_free_rate: 0.07,
         }
     }
@@ -244,5 +299,29 @@ pub fn load_or_create_config(paths: &AppPaths) -> io::Result<AppConfig> {
     let json = serde_json::to_string_pretty(&cfg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     fs::write(&paths.settings_file, json)?;
+    Ok(cfg)
+}
+
+/// The settings file as pretty JSON. Missing sections are filled with defaults,
+/// so new options show up in the editor.
+pub fn read_settings_json(paths: &AppPaths) -> Result<String, String> {
+    let cfg = match fs::read_to_string(&paths.settings_file) {
+        Ok(s) => serde_json::from_str::<AppConfig>(&s).map_err(|e| format!("settings.json is invalid: {e}"))?,
+        Err(_) => AppConfig::default(),
+    };
+    serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
+}
+
+/// Validate and write the settings file. Returns the parsed config.
+pub fn write_settings_json(paths: &AppPaths, json: &str) -> Result<AppConfig, String> {
+    let cfg: AppConfig = serde_json::from_str(json).map_err(|e| format!("Invalid settings JSON: {e}"))?;
+    if cfg.server.is_set() {
+        cfg.server.base_url()?;
+    }
+    let pretty = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    // Write to a temp file first so a crash cannot leave a half-written file.
+    let tmp = paths.settings_file.with_extension("json.tmp");
+    fs::write(&tmp, pretty).map_err(|e| format!("Could not write settings: {e}"))?;
+    fs::rename(&tmp, &paths.settings_file).map_err(|e| format!("Could not save settings: {e}"))?;
     Ok(cfg)
 }
