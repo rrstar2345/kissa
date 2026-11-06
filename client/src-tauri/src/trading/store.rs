@@ -8,7 +8,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::json;
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 use std::collections::{BTreeMap, HashMap};
 
 use super::charges;
@@ -90,7 +90,7 @@ const OPEN_SQL: &str = "status IN ('TRANSIT','PENDING','TRIGGERED','PART_TRADED'
 
 pub async fn insert_order(pool: &SqlitePool, o: &OrderRow) -> Result<()> {
     let marks = vec!["?"; 26].join(", ");
-    sqlx::query(&format!("INSERT INTO orders ({ORDER_COLS}) VALUES ({marks})"))
+    sqlx::query(AssertSqlSafe(format!("INSERT INTO orders ({ORDER_COLS}) VALUES ({marks})")))
         .bind(&o.id)
         .bind(&o.account_id)
         .bind(&o.account_kind)
@@ -144,16 +144,16 @@ pub async fn save_order_state(pool: &SqlitePool, o: &OrderRow) -> Result<()> {
 }
 
 pub async fn get_order(pool: &SqlitePool, id: &str) -> Result<Option<OrderRow>> {
-    Ok(sqlx::query_as::<_, OrderRow>(&format!("SELECT {ORDER_COLS} FROM orders WHERE id = ?"))
+    Ok(sqlx::query_as::<_, OrderRow>(AssertSqlSafe(format!("SELECT {ORDER_COLS} FROM orders WHERE id = ?")))
         .bind(id)
         .fetch_optional(pool)
         .await?)
 }
 
 pub async fn find_order_by_broker_id(pool: &SqlitePool, account_id: &str, broker_id: &str) -> Result<Option<OrderRow>> {
-    Ok(sqlx::query_as::<_, OrderRow>(&format!(
+    Ok(sqlx::query_as::<_, OrderRow>(AssertSqlSafe(format!(
         "SELECT {ORDER_COLS} FROM orders WHERE account_id = ? AND broker_order_id = ? LIMIT 1"
-    ))
+    )))
     .bind(account_id)
     .bind(broker_id)
     .fetch_optional(pool)
@@ -161,9 +161,9 @@ pub async fn find_order_by_broker_id(pool: &SqlitePool, account_id: &str, broker
 }
 
 pub async fn find_order_by_correlation(pool: &SqlitePool, account_id: &str, corr: &str) -> Result<Option<OrderRow>> {
-    Ok(sqlx::query_as::<_, OrderRow>(&format!(
+    Ok(sqlx::query_as::<_, OrderRow>(AssertSqlSafe(format!(
         "SELECT {ORDER_COLS} FROM orders WHERE account_id = ? AND correlation_id = ? LIMIT 1"
-    ))
+    )))
     .bind(account_id)
     .bind(corr)
     .fetch_optional(pool)
@@ -171,11 +171,11 @@ pub async fn find_order_by_correlation(pool: &SqlitePool, account_id: &str, corr
 }
 
 pub async fn list_orders(pool: &SqlitePool, account: Option<&str>, date: Option<&str>) -> Result<Vec<OrderRow>> {
-    Ok(sqlx::query_as::<_, OrderRow>(&format!(
+    Ok(sqlx::query_as::<_, OrderRow>(AssertSqlSafe(format!(
         "SELECT {ORDER_COLS} FROM orders
          WHERE (? IS NULL OR account_id = ?) AND (? IS NULL OR trade_date = ?)
          ORDER BY created_at DESC LIMIT 1000"
-    ))
+    )))
     .bind(account)
     .bind(account)
     .bind(date)
@@ -186,9 +186,9 @@ pub async fn list_orders(pool: &SqlitePool, account: Option<&str>, date: Option<
 
 /// Orders that can still change. `kind` limits to `paper` or `dhan`.
 pub async fn open_orders(pool: &SqlitePool, kind: Option<&str>) -> Result<Vec<OrderRow>> {
-    Ok(sqlx::query_as::<_, OrderRow>(&format!(
+    Ok(sqlx::query_as::<_, OrderRow>(AssertSqlSafe(format!(
         "SELECT {ORDER_COLS} FROM orders WHERE {OPEN_SQL} AND (? IS NULL OR account_kind = ?) ORDER BY created_at"
-    ))
+    )))
     .bind(kind)
     .bind(kind)
     .fetch_all(pool)
@@ -307,7 +307,7 @@ pub async fn record_fill(pool: &SqlitePool, cfg: &ChargesConfig, f: Fill<'_>) ->
         ext_id: f.ext_id,
     };
     let marks = vec!["?"; 19].join(", ");
-    sqlx::query(&format!("INSERT INTO trades ({TRADE_COLS}) VALUES ({marks})"))
+    sqlx::query(AssertSqlSafe(format!("INSERT INTO trades ({TRADE_COLS}) VALUES ({marks})")))
         .bind(&row.id)
         .bind(&row.account_id)
         .bind(&row.order_id)
@@ -333,11 +333,11 @@ pub async fn record_fill(pool: &SqlitePool, cfg: &ChargesConfig, f: Fill<'_>) ->
 }
 
 pub async fn list_trades(pool: &SqlitePool, account: Option<&str>, date: Option<&str>) -> Result<Vec<TradeRow>> {
-    Ok(sqlx::query_as::<_, TradeRow>(&format!(
+    Ok(sqlx::query_as::<_, TradeRow>(AssertSqlSafe(format!(
         "SELECT {TRADE_COLS} FROM trades
          WHERE (? IS NULL OR account_id = ?) AND (? IS NULL OR trade_date = ?)
          ORDER BY ts DESC, rowid DESC LIMIT 2000"
-    ))
+    )))
     .bind(account)
     .bind(account)
     .bind(date)
@@ -452,11 +452,11 @@ pub async fn last_close(pool: &SqlitePool, instrument: &str) -> Option<f64> {
 
 /// Trader's diary: per IST day, newest first, with that day's trades.
 pub async fn diary(pool: &SqlitePool, account: Option<&str>, from: &str, to: &str) -> Result<Vec<DiaryDay>> {
-    let trades: Vec<TradeRow> = sqlx::query_as(&format!(
+    let trades: Vec<TradeRow> = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {TRADE_COLS} FROM trades
          WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?
          ORDER BY ts, rowid"
-    ))
+    )))
     .bind(account)
     .bind(account)
     .bind(from)
