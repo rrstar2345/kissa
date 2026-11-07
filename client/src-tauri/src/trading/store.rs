@@ -391,6 +391,7 @@ struct PosTrade {
     product: String,
     qty: i64,
     price: f64,
+    trade_date: String,
 }
 
 #[derive(Debug, Clone)]
@@ -405,12 +406,14 @@ pub struct OpenPos {
     pub product: String,
     pub net_qty: i64,
     pub avg_price: f64,
+    /// IST date the position was last opened from flat.
+    pub opened_on: String,
 }
 
 /// Open (non-zero) positions in contracts that have not expired yet.
 pub async fn open_positions(pool: &SqlitePool, account: Option<&str>, today: &str) -> Result<Vec<OpenPos>> {
     let trades: Vec<PosTrade> = sqlx::query_as(
-        "SELECT account_id, instrument, symbol, expiry, strike, is_call, lot_size, side, product, qty, price
+        "SELECT account_id, instrument, symbol, expiry, strike, is_call, lot_size, side, product, qty, price, trade_date
          FROM trades
          WHERE expiry >= ? AND (? IS NULL OR account_id = ?)
          ORDER BY account_id, instrument, product, ts, rowid",
@@ -421,17 +424,20 @@ pub async fn open_positions(pool: &SqlitePool, account: Option<&str>, today: &st
     .fetch_all(pool)
     .await?;
 
-    let mut map: BTreeMap<(String, String, String), (PosTrade, Lot)> = BTreeMap::new();
+    let mut map: BTreeMap<(String, String, String), (PosTrade, Lot, String)> = BTreeMap::new();
     for t in trades {
         let key = (t.account_id.clone(), t.instrument.clone(), t.product.clone());
-        let entry = map.entry(key).or_insert_with(|| (t.clone(), Lot::default()));
+        let entry = map.entry(key).or_insert_with(|| (t.clone(), Lot::default(), t.trade_date.clone()));
+        if entry.1.qty == 0 {
+            entry.2 = t.trade_date.clone();
+        }
         entry.1 = apply_fill(entry.1, sign(&t.side), t.qty, t.price).0;
         entry.0 = t;
     }
     Ok(map
         .into_values()
-        .filter(|(_, lot)| lot.qty != 0)
-        .map(|(t, lot)| OpenPos {
+        .filter(|(_, lot, _)| lot.qty != 0)
+        .map(|(t, lot, opened_on)| OpenPos {
             account_id: t.account_id,
             instrument: t.instrument,
             symbol: t.symbol,
@@ -442,8 +448,20 @@ pub async fn open_positions(pool: &SqlitePool, account: Option<&str>, today: &st
             product: t.product,
             net_qty: lot.qty,
             avg_price: lot.avg,
+            opened_on,
         })
         .collect())
+}
+
+/// All-time (realised P&L, charges) of an account.
+pub async fn account_pnl(pool: &SqlitePool, account: &str) -> Result<(f64, f64)> {
+    let (realised, charges): (f64, f64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(realised), 0.0), COALESCE(SUM(charges), 0.0) FROM trades WHERE account_id = ?",
+    )
+    .bind(account)
+    .fetch_one(pool)
+    .await?;
+    Ok((realised, charges))
 }
 
 /// Per account: (realised, charges, trade count) for a trade date.
@@ -634,6 +652,7 @@ mod tests {
         let open = open_positions(&pool, Some("acc"), "2026-01-01").await.unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!((open[0].net_qty, open[0].avg_price), (65, 100.0));
+        assert_eq!(open[0].opened_on, ist_date(Utc::now()));
 
         order.id = "o2".into();
         order.correlation_id = "c2".into();
@@ -646,6 +665,10 @@ mod tests {
         assert!((sell.realised - 650.0).abs() < 1e-9);
         assert!(sell.charges > buy.charges); // STT applies on the sell side
         assert!(open_positions(&pool, Some("acc"), "2026-01-01").await.unwrap().is_empty());
+
+        let (realised_all, charges_all) = account_pnl(&pool, "acc").await.unwrap();
+        assert!((realised_all - 650.0).abs() < 1e-9);
+        assert!((charges_all - (buy.charges + sell.charges)).abs() < 0.011);
 
         let today = ist_date(Utc::now());
         let totals = day_totals(&pool, &today).await.unwrap();

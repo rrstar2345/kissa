@@ -2,7 +2,7 @@
   import { api } from '$lib/api';
   import { num } from '$lib/format';
   import { contractName } from '$lib/trading.svelte';
-  import type { PlaceOrderInput, Position } from '$lib/types';
+  import type { Position } from '$lib/types';
 
   let { position, ondone }: { position: Position; ondone?: () => void } = $props();
 
@@ -13,11 +13,9 @@
   const side = $derived(position.netQty > 0 ? 'SELL' : 'BUY');
   const qty = $derived(Math.abs(position.netQty));
   const lots = $derived(position.lotSize > 0 ? qty / position.lotSize : 0);
-  /** LTP rounded to the 0.05 tick. */
-  const price = $derived(position.ltp && position.ltp > 0 ? Math.max(0.05, Math.round(position.ltp * 20) / 20) : null);
 
   const blocked = $derived(
-    price === null
+    position.exitPrice === null
       ? 'No LTP available yet'
       : !Number.isInteger(lots) || lots < 1
         ? 'Quantity is not a whole number of lots'
@@ -25,24 +23,11 @@
   );
 
   async function confirm() {
-    if (price === null || blocked) return;
+    if (blocked) return;
     busy = true;
     error = '';
-    const input: PlaceOrderInput = {
-      accountId: position.accountId,
-      symbol: position.symbol,
-      expiry: position.expiry,
-      strike: position.strike,
-      isCall: position.isCall,
-      side,
-      product: position.product,
-      orderType: 'LIMIT',
-      validity: 'DAY',
-      lots,
-      price
-    };
     try {
-      await api.placeOrder(input);
+      await api.exitPosition(position.accountId, position.instrument, position.product);
       open = false;
       ondone?.();
     } catch (e) {
@@ -66,11 +51,12 @@
         <span class="font-semibold {side === 'BUY' ? 'up' : 'down'}">{side} LIMIT</span>
         <span class="text-base-content/60">Quantity</span>
         <span class="num">{qty} ({lots} lot{lots === 1 ? '' : 's'})</span>
-        <span class="text-base-content/60">Limit price (LTP)</span>
-        <span class="num">{num(price)}</span>
+        <span class="text-base-content/60">Limit price</span>
+        <span class="num">{num(position.exitPrice)} <span class="text-xs text-base-content/50">(LTP {num(position.ltp)} + buffer)</span></span>
         <span class="text-base-content/60">Product</span>
         <span>{position.product === 'INTRADAY' ? 'MIS' : 'NRML'}</span>
       </div>
+      <p class="mt-3 text-xs text-base-content/60">Open orders on this contract are cancelled first.</p>
       {#if error}<div role="alert" class="alert alert-error alert-soft mt-3 py-2 text-sm break-words">{error}</div>{/if}
       <div class="modal-action">
         <button class="btn btn-ghost btn-sm" onclick={() => (open = false)} disabled={busy}>Close</button>

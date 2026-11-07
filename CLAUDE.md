@@ -31,6 +31,7 @@ Decisions made: phased build; secrets in OS keychain (`keyring`), everything els
 | Phase 2: charts, OHLC storage, indicators, Fyers backfill | Written and compiling; Fyers backfill never run live |
 | Phase 3: orders, paper executor, Dhan via proxy, dashboard/diary | Compiles and runs for paper (user-verified). **Dhan/proxy order flow never run live** |
 | Enhancements: Exit button, Settings page, server connection, order gate | Done, user-tested (Nov 2026) |
+| Roadmap item 0: Broker trait refactor + paper fidelity | Written; builds clean (user-verified build, Nov 2026); paper behaviour not yet exercised |
 
 ## Enhancements delivered after Phase 3
 - **Exit button** (`lib/components/ExitButton.svelte`, used on Orders > Positions and Dashboard): confirm dialog, then `place_order` with the opposite side, full quantity, LIMIT at LTP rounded to 0.05, same product, DAY. Disabled without LTP or when qty is not a whole number of lots.
@@ -43,7 +44,7 @@ Frontend `src/`: `app.css` (all theme/styles; themes `kissa-dark`/`kissa-light`;
 
 Backend `src-tauri/src/`:
 - `lib.rs`: setup (folders, config, DB, state), market-clock supervisor, always-on index streamer, command registration.
-- `state.rs`: `AppState {config, db, stats, session, indices (std RwLock map), fno, chain}`; managed as `Arc<AppState>`.
+- `state.rs`: `AppState {config, db, stats, session, indices (std RwLock map), fno, chain, recorder, ltp, trading}`; managed as `Arc<AppState>`.
 - `market/`: `http.rs` (NSE cookie-warmed reqwest + WSS connect), `market_clock.rs` (NSE-synced IST, Active/Idle `SessionState`), `symbols.rs` (F&O indices + expiries), `events.rs` (`IndexTick`, `OptionTick`, `LegTick`), `streamers/{indices,options}.rs`. Streamers were decoupled from storage; they emit via a callback (`IndexSink`) or `UnboundedSender<OptionTick>`.
 - `chain/`: `engine.rs` (aggregates ticks, derives OI change and Greeks, emits snapshots every 300 ms), `greeks.rs` (Black-76 IV/Greeks, tested), `fyers.rs` (REST poller/parser), `runner.rs` (spawns/aborts tasks; events `chain-snapshot`, `chain-status`), `mod.rs` (models).
 - `accounts.rs` (CRUD + connection tests), `secrets.rs` (keychain; service `kissa`, key `<accountId>:<field>`), `db.rs` (tables `app_settings` kv, `accounts`), `settings.rs` (`~/.local/share/.kissa/{kissa.db,settings.json}` equivalents via `dirs`), `stats.rs`, `commands.rs`.
@@ -63,25 +64,37 @@ Decisions: persist indices + option strikes within ±20 of ATM of the streamed c
 
 ## Phase 3 notes (as built)
 Decisions: Dhan `securityId` from Dhan's instrument CSV (cached in table `scrip`, refreshed daily); global `LtpStore` fed by chain engines plus a background feed (`trading/feed.rs`) for symbols with open positions or pending paper orders; full charge estimate with rates in `settings.json` under `trading.charges`; order entry by clicking bid/ask/LTP on the chain (ticket drawer).
-Backend `src-tauri/src/trading/`: `mod.rs` (types, camelCase serde), `ltp.rs`, `charges.rs`, `scrip.rs`, `store.rs` (tables `orders`, `trades`; positions folded from trades by average cost; a stale `orders`/`trades` table without `trade_date` is renamed `*_legacy_<ts>` at startup), `paper.rs`, `dhan.rs` (proxy REST + WSS with `since` replay), `service.rs` (`TradingService`), `feed.rs`.
-Commands: `place_order, cancel_order, modify_order, list_orders, list_trades, get_dashboard, get_diary, contract_info, refresh_instruments, connect_broker, sync_orders`. Events: `order-update`, `broker-status`.
+Backend `src-tauri/src/trading/` (layout since item 0): `mod.rs` (types, camelCase serde), `ltp.rs`, `charges.rs`, `scrip.rs`, `pricing.rs` (tick maths, `exit_price`, `slipped`), `store.rs` (tables `orders`, `trades`; positions folded from trades by average cost, `OpenPos.opened_on`, `account_pnl`; a stale `orders`/`trades` table without `trade_date` is renamed `*_legacy_<ts>` at startup), `feed.rs`, `server.rs`, `broker/` and `service/` (see Item 0 notes).
+Commands: `place_order, cancel_order, modify_order, exit_position, exit_all, get_quote, list_orders, list_trades, get_dashboard, get_diary, contract_info, refresh_instruments, connect_broker, sync_orders`. Events: `order-update`, `broker-status`.
 Frontend: `lib/trading.svelte.ts`, `lib/components/OrderTicket.svelte`, ChainTable `onpick`, `routes/orders` (Orders/Trades/Positions), `routes/+page.svelte` (dashboard + diary).
 SQLx 0.9 note: `format!`-built SQL must be wrapped in `sqlx::AssertSqlSafe(...)` (only constants are interpolated).
 Chain/index fixes made after first run: ATM now comes only from the real index price (no put-call-parity guess); the snapshot is held until the index price arrives, with a 30 s fallback that shows rows without ATM; the indices streamer's idle wait is interruptible and the supervisor sets the session mode before the NSE time request (previously the index price could take up to ~2 min after start). The NSE homepage warm-up often returns 403; cookies are optional for the streamers (Origin/Referer/User-Agent are what they need), so this is only log noise.
 
+## Item 0 notes (as built: broker interface and paper fidelity)
+Decisions: refactor + core fidelity now; margin model = simple estimate; **not built**: expiry settlement, bracket/OCO orders (next pass).
+**Broker trait** (`trading/broker/mod.rs`, uses the `async-trait` crate): `kind, needs_instrument_ids, pre_trade, place, modify, cancel, brokerage, connect, sync, forget, watched_contracts`. Brokers answer with a `Reply` and push later changes (fills, trigger, expiry, Dhan WSS/order-book) as `BrokerEvent::{Order(OrderUpdate), Resync, Status}` on one unbounded channel consumed by `TradingService::on_event`. `Brokers` registry maps account kind to `Arc<dyn Broker>`; registration is in `TradingService::new`. **To add a broker**: new folder under `broker/`, implement the trait, register it; account kind = `kind()`. `BrokerError{message, unknown}`: `unknown` means outcome unknown, so the service marks the order UNKNOWN and resyncs.
+**Order flow** (`service/orders.rs`): validate (pure `validate`, tested) → expiry check → server gate → account/broker → `resolve_contract` → build `OrderRow` (status TRANSIT) → `broker.pre_trade` (errors leave no row) → insert → `broker.place` → `apply_reply`. All state goes through `apply_state` (service/mod.rs): books fills via `store::record_fill`, terminal statuses sticky. Broker pushes go through `apply_update` (match by local id, broker id, then correlation id; unknown orders ignored).
+**Paper broker** (`broker/paper/`): `matching.rs` (`evaluate` with slippage), `book.rs` (open orders in memory, reloaded from SQLite at start), `funds.rs` (pure margin maths, tested), `mod.rs` (`PaperBroker`: owns the price-change loop fed by the `LtpStore` notify channel and a 5 s day-order expiry loop). `pre_trade` = market hours, INTRADAY cut-off, `check_funds`. Latency is a sleep inside `place`/`modify`. Paper reply uses the local order id as `broker_order_id`. Fills arriving later are events; fills at place time come back in the `Reply`.
+**Funds model**: cash = `startingCapital` + all-time realised − charges; long position blocks avg x qty, short blocks `strike x qty x short_margin_pct/100`; pending orders reserve the exposure-increasing part only. Skipped without `startingCapital` or if `paper.enforce_margin` is false. Expired contracts are not settled, so their premium is never lost.
+**Auto square-off** (`service/squareoff.rs`, run by the 5 s sweeper): paper accounts only, INTRADAY only, at `paper.square_off_time` or for positions opened on an earlier date (start-up catch-up). Needs a price (live/stale quote, else last bar close); cancels the contract's open orders, writes a synthetic filled LIMIT order (message "Auto square-off", correlation `sq...`) through `apply_state`. Off when `paper_allow_off_hours` is true.
+**Exit** (`service/exit.rs`): `exit_position` / `exit_all` cancel open orders on the contract, then `place` a LIMIT at `exit_price` (LTP ± `trading.exit_buffer_ticks`). `Position.exitPrice` is computed in the dashboard so the UI shows the same price. The frontend does no exit maths. Exit All continues past failures and returns `skipped` reasons.
+**Quote**: `get_quote` returns `QuoteView{ltp, ageSecs, live}` from the `LtpStore`; the ticket polls it every second.
+**Config** (`settings.json` `trading`): `exit_buffer_ticks` (2), `paper {enforce_margin true, short_margin_pct 10, slippage_ticks 0, latency_ms 0, auto_square_off true, square_off_time "15:20"}`. Existing keys unchanged. Like the rest of `trading`, applied at restart.
+**Behaviour changes vs before**: paper orders start as TRANSIT (were PENDING); Exit cancels the contract's open orders and uses a 2-tick buffer; the sweeper is now 5 s (was 20 s) and only handles square-off and the 60 s order-book resync, since paper expiry moved into `PaperBroker`.
+**Known gaps / unverified**: nothing here has run live; if saving a paper fill fails the order is not re-queued (old code retried); `sync` for Dhan now pushes events (applied asynchronously), so `sync_orders` returns before the ledger updates; no tests for `PaperBroker`/service flows beyond the pure helpers; square-off uses the live price only when one exists in memory after restart (else last bar).
+
 ### Phase 3 behaviour gaps
-- Positions are keyed by account + instrument + product; no INTRADAY to MARGIN conversion, no auto square-off at day end, no expiry settlement (expired contracts just drop out).
-- Paper has no margin or capital check; `startingCapital` is informational.
+- Positions are keyed by account + instrument + product; no INTRADAY to MARGIN conversion, no expiry settlement (expired contracts just drop out). Paper INTRADAY auto square-off exists; live Dhan is squared off by the broker.
+- Paper margin is a rough estimate (see Item 0 notes); expiry settlement is not implemented.
 - Dhan partial fills are booked by cumulative-quantity deltas (unverified against a real feed); cancel of a partly filled order is allowed, modify is blocked.
 - An order left `UNKNOWN` after retries is resolved only by the 60 s order-book resync.
 - `save_account` does not explicitly drop a cached Dhan connection; credential changes are detected on next use (verify).
 - `last_close` position fallback reads `bars`; confirm the instrument key matches what the recorder stores.
-- Order ticket shows no live price; price field holds the clicked value.
 
 ## Dev environment notes
 - The user has Rust 1.94+ (sqlx 0.9) and builds with `pnpm tauri dev` / `cargo test --lib`. The sandbox does **not** build Rust (user preference). Verify the frontend with `npm i -g pnpm`, `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build` in `client/`.
 - Sandbox network cannot reach nseindia.com or Fyers; live streaming cannot be tested there. Prefer unit tests with fixtures for engines and parsers (the user runs them).
-- Zip only edited/created files: `git status --porcelain --untracked-files=all | grep -v node_modules`.
+- Moved/deleted Rust files: tell the user which old files to delete (a stale `service.rs` next to `service/mod.rs` breaks the build). Zip only edited/created files: `git status --porcelain --untracked-files=all | grep -v node_modules`.
 
 ## Known gaps and unverified assumptions
 - Never run against live NSE/Fyers/proxy/keychain; expect first-run fixes.
@@ -96,12 +109,12 @@ Chain/index fixes made after first run: ATM now comes only from the real index p
 - Unused template assets remain in `client/static/` (vite/svelte/tauri svgs).
 - Settings other than `server` need a restart. The settings editor rewrites the file from `AppConfig`, so unknown keys are dropped.
 - The order gate makes a proxy round trip per order/modify, and the proxy must be up even for paper trading.
-- Exit places a LIMIT at LTP, which may not fill if price moves; there is no market order by design.
+- Exit places a LIMIT at LTP ± `exit_buffer_ticks`, which may still not fill in a fast market; there is no market order by design.
 
 ## Roadmap (not started; user's items first, then suggestions)
-Suggested build order: 0, then 1, 4, 5 (risk), 2, 3. Confirm scope with the user before starting each; ask with options plus a recommendation.
+Suggested build order: finish 0 (bracket/OCO, expiry settlement), then 1, 4, 5 (risk), 2, 3. Confirm scope with the user before starting each; ask with options plus a recommendation.
 
-**0. Foundation: broker interface and paper fidelity (suggested first).** Put paper and Dhan behind one trait so placing/modifying/cancelling/state sync go through the same path, and make paper behave like a real broker: margin/capital check, INTRADAY auto square-off at day end, expiry settlement, optional slippage/latency, stop-loss/target (bracket/OCO) orders, order ticket live price, Exit All. Switching to a real broker later should then be config plus verification.
+**0. Foundation: broker interface and paper fidelity: DONE** except expiry settlement and bracket/OCO (stop-loss/target) orders, which remain open (see Item 0 notes). Done: `Broker` trait, margin/capital check, INTRADAY auto square-off, slippage/latency, order ticket live price, Exit All.
 
 **1. Configurable signal rules (user).** Rules, defined in the UI and stored in SQLite, that produce buy/sell signals on charts. Example: BUY when RSI(14) crosses above its own EMA(9) and price > SMA(20) and price > SMA(50); SELL when RSI(14) crosses below its EMA(9). Design notes: a rule is a JSON condition tree (operands = indicator series with params or price; operators `crosses_above`, `crosses_below`, `>`, `<`; AND/OR) per instrument and interval, evaluated on bar close. `charts/indicators.rs` needs **indicators of indicators** (EMA of RSI) and a generic series-reference model. Signals should appear on charts, and the same engine should feed alerts and algos (items 3 and 4), so build it as a reusable rule engine, not chart-only code.
 

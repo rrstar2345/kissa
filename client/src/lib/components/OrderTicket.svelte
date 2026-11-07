@@ -8,6 +8,7 @@
     OrderRow,
     OrderType,
     Product,
+    QuoteView,
     Side,
     TicketRequest,
     Validity
@@ -38,6 +39,7 @@
   let placed = $state<OrderRow | null>(null);
   let busy = $state(false);
   let refreshing = $state(false);
+  let quote = $state<QuoteView | null>(null);
 
   const account = $derived(accounts.find((a) => a.id === accountId) ?? null);
   const qty = $derived(info?.lotSize ? lots * info.lotSize : null);
@@ -67,6 +69,32 @@
     placed = null;
     loadInfo(r);
   });
+
+  // Live price of the contract, refreshed while the ticket is open.
+  $effect(() => {
+    const r = request;
+    quote = null;
+    if (!r) return;
+    let stop = false;
+    const poll = async () => {
+      try {
+        const q = await api.getQuote(r.symbol, r.expiry, r.strike, r.isCall);
+        if (!stop) quote = q;
+      } catch {
+        /* keep the last value */
+      }
+    };
+    poll();
+    const t = setInterval(poll, 1000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  });
+
+  function useLtp() {
+    if (quote?.ltp) price = Math.max(0.05, Math.round(quote.ltp * 20) / 20);
+  }
 
   async function loadInfo(r: TicketRequest) {
     info = null;
@@ -197,6 +225,17 @@
       </div>
 
       <div class="rounded-lg bg-base-200 px-3 py-2 text-xs">
+        <div class="flex items-center justify-between">
+          <span class="text-base-content/60">LTP</span>
+          <span class="flex items-center gap-2">
+            <span class="num text-sm font-semibold">{quote?.ltp != null ? num(quote.ltp) : '—'}</span>
+            {#if quote?.ltp != null}
+              <span class="badge badge-xs {quote.live ? 'badge-success' : 'badge-ghost'}"
+                title={quote.ageSecs != null ? `${quote.ageSecs}s old` : ''}>{quote.live ? 'live' : 'last'}</span>
+              <button class="btn btn-ghost btn-xs" onclick={useLtp} title="Set the price to the LTP">Use</button>
+            {/if}
+          </span>
+        </div>
         <div class="flex justify-between">
           <span class="text-base-content/60">Quantity</span>
           <span class="num">{qty ?? '—'}</span>

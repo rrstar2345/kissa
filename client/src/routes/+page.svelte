@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
   import { contractName, trading } from '$lib/trading.svelte';
@@ -107,7 +108,10 @@
 
   {#if dash?.positions.length}
     <section class="flex flex-col gap-2">
-      <h2 class="font-semibold">Open positions</h2>
+      <div class="flex items-center justify-between">
+        <h2 class="font-semibold">Open positions</h2>
+        <ExitAllButton positions={dash.positions} ondone={loadDash} />
+      </div>
       <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
         <table class="table table-sm">
           <thead>

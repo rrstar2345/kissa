@@ -281,6 +281,21 @@ export interface Position {
   ltp: number | null;
   ltpSource: 'live' | 'last' | 'none';
   unrealised: number | null;
+  /** Limit price an Exit order would use now (last price plus buffer). */
+  exitPrice: number | null;
+}
+
+export interface QuoteView {
+  ltp: number | null;
+  ageSecs: number | null;
+  live: boolean;
+}
+
+export interface ExitAllResult {
+  placed: number;
+  cancelled: number;
+  skipped: string[];
+  orders: OrderRow[];
 }
 
 export interface AccountSummary {

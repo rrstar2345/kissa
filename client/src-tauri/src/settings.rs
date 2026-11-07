@@ -163,6 +163,57 @@ impl Default for ChargesConfig {
     }
 }
 
+/// How the paper broker imitates a real one.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct PaperConfig {
+    /// Reject orders the account cannot fund (needs `startingCapital` on the
+    /// paper account; without it there is no limit).
+    pub enforce_margin: bool,
+    /// Margin blocked for a short option, as % of strike x quantity.
+    /// A rough stand-in for SPAN + exposure margin.
+    pub short_margin_pct: f64,
+    /// Adverse price slip on fills, in 0.05 ticks (0 = fill at the last price).
+    pub slippage_ticks: u32,
+    /// Delay before the paper broker accepts an order (milliseconds).
+    pub latency_ms: u64,
+    /// Close INTRADAY positions and cancel their orders at the cut-off, as
+    /// real brokers do. Ignored when `trading.paper_allow_off_hours` is on.
+    pub auto_square_off: bool,
+    /// Cut-off, IST, `HH:MM`. New INTRADAY orders are refused from this time.
+    pub square_off_time: String,
+}
+
+impl Default for PaperConfig {
+    fn default() -> Self {
+        Self {
+            enforce_margin: true,
+            short_margin_pct: 10.0,
+            slippage_ticks: 0,
+            latency_ms: 0,
+            auto_square_off: true,
+            square_off_time: "15:20".into(),
+        }
+    }
+}
+
+impl PaperConfig {
+    /// Slippage in rupees.
+    pub fn slippage(&self) -> f64 {
+        self.slippage_ticks as f64 * 0.05
+    }
+
+    /// Cut-off as minutes since midnight IST (falls back to 15:20 if the
+    /// text is not `HH:MM`).
+    pub fn cutoff_minutes(&self) -> u32 {
+        let parsed = self.square_off_time.trim().split_once(':').and_then(|(h, m)| {
+            let (h, m) = (h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?);
+            (h < 24 && m < 60).then_some(h * 60 + m)
+        });
+        parsed.unwrap_or(15 * 60 + 20)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct TradingConfig {
@@ -181,7 +232,19 @@ pub struct TradingConfig {
     pub request_timeout_secs: u64,
     /// Used for paper trading only when the instrument list has no lot size.
     pub fallback_lot_sizes: HashMap<String, i64>,
+    /// Exit / Exit All use a LIMIT this many ticks (0.05) beyond the last
+    /// price, so the order is marketable without being a market order.
+    pub exit_buffer_ticks: u32,
     pub charges: ChargesConfig,
+    pub paper: PaperConfig,
+}
+
+impl TradingConfig {
+    /// Paper auto square-off cut-off (minutes since midnight IST), or `None`
+    /// when the feature is off.
+    pub fn square_off_minutes(&self) -> Option<u32> {
+        (self.paper.auto_square_off && !self.paper_allow_off_hours).then(|| self.paper.cutoff_minutes())
+    }
 }
 
 impl Default for TradingConfig {
@@ -198,7 +261,9 @@ impl Default for TradingConfig {
             scrip_refresh_hours: 24,
             request_timeout_secs: 30,
             fallback_lot_sizes,
+            exit_buffer_ticks: 2,
             charges: ChargesConfig::default(),
+            paper: PaperConfig::default(),
         }
     }
 }
@@ -324,4 +389,39 @@ pub fn write_settings_json(paths: &AppPaths, json: &str) -> Result<AppConfig, St
     fs::write(&tmp, pretty).map_err(|e| format!("Could not write settings: {e}"))?;
     fs::rename(&tmp, &paths.settings_file).map_err(|e| format!("Could not save settings: {e}"))?;
     Ok(cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn square_off_time_parses_or_falls_back() {
+        let mut p = PaperConfig::default();
+        assert_eq!(p.cutoff_minutes(), 15 * 60 + 20);
+        p.square_off_time = "14:45".into();
+        assert_eq!(p.cutoff_minutes(), 14 * 60 + 45);
+        p.square_off_time = "nonsense".into();
+        assert_eq!(p.cutoff_minutes(), 15 * 60 + 20);
+        p.square_off_time = "25:00".into();
+        assert_eq!(p.cutoff_minutes(), 15 * 60 + 20);
+    }
+
+    #[test]
+    fn square_off_is_off_when_practising_after_hours() {
+        let mut t = TradingConfig::default();
+        assert_eq!(t.square_off_minutes(), Some(15 * 60 + 20));
+        t.paper_allow_off_hours = true;
+        assert_eq!(t.square_off_minutes(), None);
+    }
+
+    #[test]
+    fn server_url_rules() {
+        let s = ServerConfig { url: "https://proxy.example.com".into(), port: 8443 };
+        assert_eq!(s.base_url().unwrap(), "https://proxy.example.com:8443");
+        let s = ServerConfig { url: "http://example.com".into(), port: 0 };
+        assert!(s.base_url().is_err());
+        let s = ServerConfig { url: "http://localhost".into(), port: 9000 };
+        assert_eq!(s.base_url().unwrap(), "http://localhost:9000");
+    }
 }

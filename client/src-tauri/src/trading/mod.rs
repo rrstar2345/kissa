@@ -1,14 +1,24 @@
-//! Phase 3: orders (paper + Dhan via broker-proxy), the local ledger of
-//! orders/trades, positions, charges and the live price store.
+//! Orders, brokers, the local ledger of orders/trades, positions, charges
+//! and the live price store.
+//!
+//! Layout:
+//! * `broker/`: the `Broker` trait and one folder per implementation
+//!   (`paper`, `dhan`). Adding a broker means adding a folder and registering
+//!   it in `service::TradingService::new`.
+//! * `service/`: broker-independent order flow (validation, routing, fills
+//!   into the ledger, exit orders, auto square-off, dashboard views).
+//! * `store.rs`, `charges.rs`, `pricing.rs`, `ltp.rs`, `feed.rs`, `scrip.rs`,
+//!   `server.rs`: persistence, costs, tick maths, prices, instrument list and
+//!   the server (broker-proxy) authentication gate.
 //!
 //! The client is the system of record: the proxy persists nothing, so every
 //! order update and fill is written to SQLite here.
 
+pub mod broker;
 pub mod charges;
-pub mod dhan;
 pub mod feed;
 pub mod ltp;
-pub mod paper;
+pub mod pricing;
 pub mod scrip;
 pub mod server;
 pub mod service;
@@ -166,6 +176,9 @@ pub struct Position {
     /// `live` (streaming), `last` (last stored bar) or `none`.
     pub ltp_source: String,
     pub unrealised: Option<f64>,
+    /// Limit price an Exit order would use right now (last price plus the
+    /// configured buffer); `None` without a price.
+    pub exit_price: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,4 +228,27 @@ pub struct BrokerStatus {
     /// `connecting` | `connected` | `disconnected` | `error`
     pub state: String,
     pub detail: String,
+}
+
+/// Latest price of one contract, for the order ticket.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuoteView {
+    pub ltp: Option<f64>,
+    /// Seconds since the price last changed hands in our feed.
+    pub age_secs: Option<i64>,
+    /// Fresh (updated within two minutes).
+    pub live: bool,
+}
+
+/// Outcome of "Exit all".
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitAllResult {
+    pub placed: usize,
+    /// Open orders cancelled first so they cannot reopen the position.
+    pub cancelled: usize,
+    /// One line per position that could not be exited, with the reason.
+    pub skipped: Vec<String>,
+    pub orders: Vec<OrderRow>,
 }

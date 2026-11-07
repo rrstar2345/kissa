@@ -216,7 +216,7 @@ pub async fn backfill_chart(
 
 // --------------------------------------------------------------- trading ---
 
-use crate::trading::{ContractInfo, Dashboard, DiaryDay, OrderRow, PlaceOrderInput, TradeRow};
+use crate::trading::{ContractInfo, Dashboard, DiaryDay, ExitAllResult, OrderRow, PlaceOrderInput, QuoteView, TradeRow};
 
 #[tauri::command]
 pub async fn place_order(input: PlaceOrderInput, state: State<'_, SharedState>) -> Res<OrderRow> {
@@ -288,7 +288,37 @@ pub async fn refresh_instruments(state: State<'_, SharedState>) -> Res<usize> {
     state.trading.refresh_instruments().await.map_err(err)
 }
 
-/// Open the proxy session and live order updates for a Dhan account.
+/// Exit one open position (cancels the contract's open orders, then a
+/// marketable LIMIT on the opposite side).
+#[tauri::command]
+pub async fn exit_position(
+    account_id: String,
+    instrument: String,
+    product: String,
+    state: State<'_, SharedState>,
+) -> Res<OrderRow> {
+    state.trading.exit_position(&account_id, &instrument, &product).await.map_err(err)
+}
+
+/// Exit every open position, of one account or all accounts.
+#[tauri::command]
+pub async fn exit_all(account_id: Option<String>, state: State<'_, SharedState>) -> Res<ExitAllResult> {
+    state.trading.exit_all(account_id.as_deref()).await.map_err(err)
+}
+
+/// Latest price of a contract, for the order ticket.
+#[tauri::command]
+pub fn get_quote(
+    symbol: String,
+    expiry: String,
+    strike: f64,
+    is_call: bool,
+    state: State<'_, SharedState>,
+) -> QuoteView {
+    state.trading.quote_view(&symbol, &expiry, strike, is_call)
+}
+
+/// Open the broker session and live order updates for an account.
 #[tauri::command]
 pub async fn connect_broker(account_id: String, state: State<'_, SharedState>) -> Res<()> {
     state.trading.connect_broker(&account_id).await.map_err(err)
@@ -297,7 +327,7 @@ pub async fn connect_broker(account_id: String, state: State<'_, SharedState>) -
 /// Re-read the broker's order book now.
 #[tauri::command]
 pub async fn sync_orders(account_id: String, state: State<'_, SharedState>) -> Res<usize> {
-    state.trading.sync_dhan(&account_id).await.map_err(err)
+    state.trading.sync_account(&account_id).await.map_err(err)
 }
 
 // ------------------------------------------------- settings.json / server ---

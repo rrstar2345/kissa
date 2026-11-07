@@ -64,7 +64,7 @@ pub fn spawn(state: SharedState) {
 }
 
 async fn needed_targets(state: &SharedState) -> HashSet<Target> {
-    let mut set = state.trading.paper_contracts();
+    let mut set = state.trading.watched_contracts();
     if let Ok(positions) = store::open_positions(&state.db, None, &today_ist()).await {
         for p in positions {
             set.insert((p.symbol, p.expiry));

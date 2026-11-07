@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
   import { contractName, isOpen, statusClass, trading } from '$lib/trading.svelte';
@@ -140,7 +141,10 @@
       </button>
     {/if}
 
-    <a href="/chain" class="btn btn-sm btn-primary ml-auto">New order from chain</a>
+    <div class="ml-auto flex items-center gap-2">
+      <ExitAllButton {positions} accountId={accountId || null} ondone={load} />
+      <a href="/chain" class="btn btn-sm btn-primary">New order from chain</a>
+    </div>
   </div>
 
   {#if error}<div role="alert" class="alert alert-error alert-soft py-2 text-sm break-words">{error}</div>{/if}

@@ -14,6 +14,7 @@ KISSA streams option prices, lets you place orders through your own [`broker-pro
 | Orders (broker-proxy REST + WSS, paper fills, local order log) | ✅ Phase 3 (paper verified; never exercised against live Dhan/proxy) |
 | Dashboard (live P&L, trader's diary) | ✅ Phase 3 |
 | Exit button, Settings page (server connection, `settings.json` editor), order gate | ✅ Done |
+| Broker interface + paper fidelity (margin check, auto square-off, slippage/latency, Exit All, live price in ticket) | ✅ Roadmap item 0 |
 
 ## Data sources
 
@@ -32,13 +33,17 @@ Choose the source on the Option Chain page or under **Accounts → Market data s
 ### Orders and dashboard
 
 - **Placing orders**: click a bid, ask or LTP on the option chain to open the order ticket (ask/LTP prefill BUY, bid prefills SELL). LIMIT and STOP_LOSS only (the proxy rejects market orders), DAY/IOC validity, quantity in lots, price in ₹0.05 ticks. Accounts: **Paper** (executed locally) or **Dhan** (via your broker-proxy).
-- **Paper executor**: fills are priced from live ticks (LIMIT; STOP_LOSS is stop-limit). Orders are rejected outside 09:15–15:30 IST Mon–Fri unless `trading.paper_allow_off_hours` is true. Brokerage comes from the account's `brokeragePerOrder`. There is no margin check.
+- **Broker interface**: paper and Dhan sit behind one `Broker` trait (`trading/broker/`), so every order takes the same path (validation, server gate, broker, ledger). Adding a broker means adding a folder under `trading/broker/` and registering it in `TradingService::new`.
+- **Paper broker**: fills are priced from live ticks (LIMIT; STOP_LOSS is stop-limit), with optional slippage (`trading.paper.slippage_ticks`) and acknowledgement latency (`latency_ms`). Orders are rejected outside 09:15–15:30 IST Mon–Fri unless `trading.paper_allow_off_hours` is true. Brokerage comes from the account's `brokeragePerOrder`.
+- **Paper margin check**: needs `startingCapital` on the paper account (otherwise no limit). Cash = starting capital + realised P&L − charges. A long blocks its premium, a short blocks `short_margin_pct` % of strike × quantity, and pending orders reserve what they would block (the part that closes a position needs nothing). An order is rejected if it exceeds what is available. This is a rough estimate, not SPAN.
+- **Paper auto square-off**: at `paper.square_off_time` (15:20 IST) open INTRADAY orders are cancelled and INTRADAY positions closed at the last price (with slippage); new INTRADAY orders are refused from then on. It also runs at start-up for positions left open by an earlier session. Disabled by `paper.auto_square_off: false` or `paper_allow_off_hours: true`. Live brokers do their own square-off.
 - **Dhan**: one proxy session per account; live updates over the proxy WebSocket with `since` replay, orders de-duplicated by `correlationId`, and a periodic order-book resync. The contract's Dhan `securityId` comes from Dhan's public instrument CSV, cached in SQLite and refreshed daily (**Refresh instruments** in the ticket if a contract is missing).
 - **Ledger**: `orders` and `trades` tables in `kissa.db`. Positions are derived from trades (average cost) and are not stored. Charges are an estimate per fill: flat brokerage per order, STT, exchange fee, SEBI, stamp duty and GST.
 - **Prices**: a shared store fed by the chain engines, plus an automatic background stream for any symbol/expiry that has open positions or pending paper orders.
 - **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**.
 - **Dashboard**: per-account cards (realised, unrealised, charges, net today), open positions with live/last/none LTP badge, and the trader's diary (per-day orders, trades, realised, charges, net, expandable trades).
-- **Exit**: open positions have an **Exit** button (Orders and Dashboard). It places a LIMIT order for the full quantity at the LTP (rounded to ₹0.05): SELL for a long position, BUY for a short one, same product, DAY validity. It asks for confirmation first and is disabled when there is no LTP.
+- **Exit / Exit all**: open positions have an **Exit** button, and Orders and Dashboard have **Exit all** (all accounts, or the selected one). The backend first cancels open orders on the contract (so a resting stop cannot reopen it), then places a LIMIT for the full quantity on the opposite side at the LTP pushed `trading.exit_buffer_ticks` (default 2) ticks against you, same product, DAY. Both ask for confirmation; Exit all lists any position it could not exit. Exit is disabled when there is no LTP.
+- **Order ticket**: shows the contract's live LTP (updated every second, live/last badge) with a **Use** button to copy it into the price.
 - **Server authentication (order gate)**: no order (paper or Dhan), and no modify, is accepted unless the server in `server` (see Configuration) accepts the API key. The key is checked on every order using a cached `paper` session on the proxy (`GET /v1/orders`), so a revoked or wrong key is caught immediately. Cancel is not gated. The proxy must therefore be reachable even for paper trading; for development run it locally (`http://localhost:<port>` is allowed) with a key from `proxy keygen`.
 - If an `orders` or `trades` table with an older layout exists, it is renamed to `<table>_legacy_<timestamp>` at startup rather than deleted.
 
@@ -50,7 +55,7 @@ Fyers supplies IV/Greeks. For NSE they are computed in Rust from LTP: Black-76 p
 
 Paper trading is being hardened first so a real broker can be switched in later with minimal change. Planned, in rough order:
 
-1. **Broker interface and paper fidelity**: one interface for paper and Dhan; paper margin check, day-end auto square-off, expiry settlement, bracket (stop/target) orders, Exit All.
+1. **Paper fidelity, remaining**: expiry settlement and bracket (stop/target, OCO) orders. (Broker interface, margin check, auto square-off, slippage/latency and Exit all are done.)
 2. **Signal rules**: configurable indicator rules (e.g. RSI(14) crossing its EMA(9) with price above SMA(20) and SMA(50)) producing buy/sell signals on charts.
 3. **Alerts**: Telegram bot and email.
 4. **Risk controls**: daily loss limit, size and position limits, kill switch.
@@ -85,7 +90,7 @@ pnpm tauri build    # release bundle
 
 **Settings page**: edit `settings.json` in the app, and set the **Server connection** (URL, port, API key). URL and port are stored in `settings.json` under `server` (`url`, `port`; https required except localhost; the port is appended unless the URL has one). The API key is stored in the OS keychain, not in the file. Server changes apply immediately; other settings are read at startup, so restart the app after changing them.
 
-`settings.json` is created on first run and may also be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, Fyers (`chain_url`, `poll_secs`, `strike_count`) and `trading`: `paper_allow_off_hours`, `dhan_brokerage_per_order` (20), `dhan_brokerage_cap_pct`, `scrip_master_url`, `scrip_refresh_hours`, `request_timeout_secs`, `fallback_lot_sizes` (used only when Dhan's list has no entry) and `charges` (STT, exchange, SEBI, stamp duty, GST rates; verify against current rates).
+`settings.json` is created on first run and may also be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, Fyers (`chain_url`, `poll_secs`, `strike_count`) and `trading`: `paper_allow_off_hours`, `exit_buffer_ticks` (2), `paper` (`enforce_margin`, `short_margin_pct` 10, `slippage_ticks` 0, `latency_ms` 0, `auto_square_off`, `square_off_time` "15:20"), `dhan_brokerage_per_order` (20), `dhan_brokerage_cap_pct`, `scrip_master_url`, `scrip_refresh_hours`, `request_timeout_secs`, `fallback_lot_sizes` (used only when Dhan's list has no entry) and `charges` (STT, exchange, SEBI, stamp duty, GST rates; verify against current rates).
 
 ## Layout
 
@@ -93,13 +98,16 @@ pnpm tauri build    # release bundle
 src/                     SvelteKit SPA (Svelte 5 runes)
   app.css                Tailwind + DaisyUI themes and all custom styling
   lib/columns.ts         option-chain column definitions
-  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel, ExitButton
+  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel, ExitButton, ExitAllButton
   lib/trading.svelte.ts  order-update / broker-status listeners, status helpers
   routes/                dashboard, chain, charts, orders, accounts, settings
 src-tauri/src/
   market/                NSE http client, clock, symbols, WSS streamers (from kstocks_egui)
   chain/                 chain model, engine, Black-76 greeks, Fyers client, runner
   charts/                bar recorder, store, indicators, backfill
-  trading/               orders, paper executor, Dhan proxy client, server auth (order gate), charges, ledger, price store
+  trading/               broker-independent order flow and the ledger
+    broker/              Broker trait + registry; paper/ (matching, funds, book) and dhan/ (adapter + proxy client)
+    service/             orders (place/modify/cancel), exit, squareoff, views (dashboard/diary/quotes)
+    store.rs pricing.rs charges.rs ltp.rs feed.rs scrip.rs server.rs  (SQLite ledger, tick maths, costs, prices, instruments, order gate)
   accounts.rs secrets.rs db.rs settings.rs commands.rs
 ```

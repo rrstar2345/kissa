@@ -6,6 +6,7 @@ import type {
   ContractInfo,
   Dashboard,
   DiaryDay,
+  ExitAllResult,
   IndicatorSpec,
   InstrumentList,
   ExpiryItem,
@@ -13,6 +14,7 @@ import type {
   MarketStatus,
   OrderRow,
   PlaceOrderInput,
+  QuoteView,
   SaveAccountInput,
   ServerSettings,
   Source,
@@ -52,6 +54,11 @@ export const api = {
     invoke<OrderRow[]>('list_orders', { accountId: accountId ?? null, date: date ?? null }),
   listTrades: (accountId?: string | null, date?: string | null) =>
     invoke<TradeRow[]>('list_trades', { accountId: accountId ?? null, date: date ?? null }),
+  exitPosition: (accountId: string, instrument: string, product: string) =>
+    invoke<OrderRow>('exit_position', { accountId, instrument, product }),
+  exitAll: (accountId?: string | null) => invoke<ExitAllResult>('exit_all', { accountId: accountId ?? null }),
+  getQuote: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
+    invoke<QuoteView>('get_quote', { symbol, expiry, strike, isCall }),
   getDashboard: (accountId?: string | null) =>
     invoke<Dashboard>('get_dashboard', { accountId: accountId ?? null }),
   getDiary: (accountId: string | null, from: string, to: string) =>

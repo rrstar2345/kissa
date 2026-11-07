@@ -37,7 +37,7 @@ pub fn run() {
 
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
             let (ltp, ltp_rx) = trading::ltp::LtpStore::new();
-            let (trading_svc, dhan_rx) =
+            let (trading_svc, broker_rx) =
                 trading::service::TradingService::new(pool.clone(), config.clone(), ltp.clone(), app.handle().clone());
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
@@ -56,7 +56,7 @@ pub fn run() {
 
             // Orders: paper matching, Dhan live updates, and the background
             // price feed for open positions / pending paper orders.
-            trading_svc.start(ltp_rx, dhan_rx);
+            trading_svc.start(ltp_rx, broker_rx);
             trading::feed::spawn(state.clone());
 
             // Market-clock supervisor: keeps NSE time offset fresh and flips
@@ -126,6 +126,9 @@ pub fn run() {
             commands::list_trades,
             commands::get_dashboard,
             commands::get_diary,
+            commands::exit_position,
+            commands::exit_all,
+            commands::get_quote,
             commands::contract_info,
             commands::refresh_instruments,
             commands::connect_broker,
