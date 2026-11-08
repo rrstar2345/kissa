@@ -23,6 +23,9 @@ use crate::trading::ltp::LtpStore;
 pub const SNAPSHOT_EVENT: &str = "chain-snapshot";
 pub const STATUS_EVENT: &str = "chain-status";
 
+/// How often a changed chain is pushed to the UI (about 7 updates a second).
+const SNAPSHOT_MS: u64 = 150;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChainStatus {
     pub state: &'static str, // "started" | "error"
@@ -94,8 +97,12 @@ pub fn spawn_nse(
 
     let engine_task = tokio::spawn(async move {
         let mut engine = ChainEngine::new(symbol.clone(), expiry.label.clone(), date, cfg.risk_free_rate);
-        let mut ticker = tokio::time::interval(Duration::from_millis(300));
+        let mut ticker = tokio::time::interval(Duration::from_millis(SNAPSHOT_MS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let started = tokio::time::Instant::now();
+        // Something changed since the last snapshot (ticks, or a new index price).
+        let mut dirty = false;
+        let mut last_spot_px = 0.0_f64;
         // Strikes near ATM whose ticks are stored for charts.
         let mut window: Option<(f64, f64)> = None;
         let each_side = cfg.charts.persist_strikes_each_side;
@@ -121,7 +128,8 @@ pub fn spawn_nse(
                             }
                         }
                     }
-                    engine.apply(t)
+                    engine.apply(t);
+                    dirty = true;
                 }
                 _ = ticker.tick() => {
                     if engine.is_empty() { continue; }
@@ -135,6 +143,14 @@ pub fn spawn_nse(
                     {
                         continue;
                     }
+                    // Send only when something changed: option ticks, or the underlying
+                    // moved (it drives ATM, the summary strip and the Greeks).
+                    let spot_px = spot.as_ref().map_or(0.0, |s| s.current_price);
+                    if !dirty && (spot_px - last_spot_px).abs() < 1e-9 {
+                        continue;
+                    }
+                    dirty = false;
+                    last_spot_px = spot_px;
                     window = spot.as_ref().and_then(|s| engine.strike_window(s.current_price, each_side));
                     let vix = find_index(&store, &["INDIA VIX".to_string()]).map(|t| t.current_price);
                     let _ = app.emit(SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));

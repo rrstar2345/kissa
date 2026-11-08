@@ -14,8 +14,11 @@
   const qty = $derived(Math.abs(position.netQty));
   const lots = $derived(position.lotSize > 0 ? qty / position.lotSize : 0);
 
+  // `position` carries the live price, so the dialog always shows the latest
+  // LTP. The limit price itself is set by the backend when you confirm (LTP
+  // pushed a few ticks in the unfavourable direction), so it is not shown here.
   const blocked = $derived(
-    position.exitPrice === null
+    position.ltp === null
       ? 'No LTP available yet'
       : !Number.isInteger(lots) || lots < 1
         ? 'Quantity is not a whole number of lots'
@@ -51,8 +54,10 @@
         <span class="font-semibold {side === 'BUY' ? 'up' : 'down'}">{side} LIMIT</span>
         <span class="text-base-content/60">Quantity</span>
         <span class="num">{qty} ({lots} lot{lots === 1 ? '' : 's'})</span>
+        <span class="text-base-content/60">LTP now</span>
+        <span class="num font-semibold">{num(position.ltp)}</span>
         <span class="text-base-content/60">Limit price</span>
-        <span class="num">{num(position.exitPrice)} <span class="text-xs text-base-content/50">(LTP {num(position.ltp)} + buffer)</span></span>
+        <span class="text-xs text-base-content/70">LTP {side === 'SELL' ? '−' : '+'} a few ticks, set when you confirm</span>
         <span class="text-base-content/60">Product</span>
         <span>{position.product === 'INTRADAY' ? 'MIS' : 'NRML'}</span>
       </div>

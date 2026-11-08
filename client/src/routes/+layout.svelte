@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { market } from '$lib/market.svelte';
+  import { quotes } from '$lib/quotes.svelte';
   import { theme } from '$lib/theme.svelte';
   import { trading } from '$lib/trading.svelte';
   import { num, signed, trend } from '$lib/format';
@@ -24,9 +25,11 @@
     theme.init();
     market.start();
     trading.start();
+    quotes.start();
     return () => {
       market.stop();
       trading.stop();
+      quotes.stop();
     };
   });
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { COLUMNS } from '$lib/columns';
   import { num } from '$lib/format';
   import type { ChainSnapshot, Leg, Side, TicketRequest } from '$lib/types';
@@ -43,25 +43,39 @@
     pe: Math.max(1, ...rows.map((r) => r.pe.oi ?? 0))
   });
 
-  // LTP flash on change
+  // LTP flash on change. Snapshots arrive several times a second, so flashes
+  // from successive snapshots are merged and cleared per cell after 700 ms
+  // (one shared timer would wipe a newer flash early).
   let prev = new Map<string, number>();
   let flashes = $state<Record<string, 'up' | 'down'>>({});
+  const flashTimers = new Map<string, ReturnType<typeof setTimeout>>();
   $effect(() => {
-    const next: Record<string, 'up' | 'down'> = {};
+    const changed: Record<string, 'up' | 'down'> = {};
     for (const r of snapshot.rows) {
       for (const side of ['ce', 'pe'] as const) {
         const k = `${r.strike}:${side}`;
         const v = r[side].ltp;
         const p = prev.get(k);
-        if (v !== null && p !== undefined && v !== p) next[k] = v > p ? 'up' : 'down';
+        if (v !== null && p !== undefined && v !== p) changed[k] = v > p ? 'up' : 'down';
         if (v !== null) prev.set(k, v);
       }
     }
-    if (Object.keys(next).length) {
-      flashes = next;
-      setTimeout(() => (flashes = {}), 700);
+    const keys = Object.keys(changed);
+    if (!keys.length) return;
+    flashes = { ...untrack(() => flashes), ...changed };
+    for (const k of keys) {
+      clearTimeout(flashTimers.get(k));
+      flashTimers.set(
+        k,
+        setTimeout(() => {
+          const { [k]: _gone, ...rest } = flashes;
+          flashes = rest;
+          flashTimers.delete(k);
+        }, 700)
+      );
     }
   });
+  $effect(() => () => flashTimers.forEach((t) => clearTimeout(t)));
 
   // Reset flash baseline when the instrument changes.
   let lastKey = '';

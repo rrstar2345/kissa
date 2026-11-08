@@ -4,6 +4,7 @@
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
+  import { livePosition } from '$lib/live';
   import { contractName, isOpen, statusClass, trading } from '$lib/trading.svelte';
   import type { Account, OrderRow, Position, TradeRow } from '$lib/types';
 
@@ -14,9 +15,12 @@
   let date = $state(todayIst());
   let allDates = $state(false);
   let tab = $state<Tab>('orders');
-  let orders = $state<OrderRow[]>([]);
-  let trades = $state<TradeRow[]>([]);
-  let positions = $state<Position[]>([]);
+  let orders = $state.raw<OrderRow[]>([]);
+  let trades = $state.raw<TradeRow[]>([]);
+  let basePositions = $state.raw<Position[]>([]);
+  // Prices and unrealised P&L follow the live quote stream; the lists above
+  // are only refetched when orders change.
+  const positions = $derived(basePositions.map(livePosition));
   let error = $state('');
   let notice = $state('');
   let busyId = $state('');
@@ -49,14 +53,15 @@
       ]);
       orders = o;
       trades = t;
-      positions = d.positions;
+      basePositions = d.positions;
       error = '';
     } catch (e) {
       error = String(e);
     }
   }
 
-  // Refetch on filter change, on live order updates, and on a slow timer (LTP for positions).
+  // Refetch on filter change and on every live order update. The timer is a
+  // safety net only; positions' prices come from the live quote stream.
   $effect(() => {
     accountId;
     dateArg;
@@ -64,7 +69,7 @@
     load();
   });
   $effect(() => {
-    const t = setInterval(load, 4000);
+    const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   });
 
@@ -169,7 +174,18 @@
               <td>{nameOf(o.accountId)}</td>
               <td class="whitespace-nowrap">{contractName(o)} <span class="text-xs text-base-content/50">{o.product === 'INTRADAY' ? 'MIS' : 'NRML'}</span></td>
               <td class={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</td>
-              <td>{o.orderType === 'LIMIT' ? 'LMT' : 'SL'}<span class="text-xs text-base-content/50"> {o.validity}</span></td>
+              <td class="whitespace-nowrap">
+                {o.orderType === 'LIMIT' ? 'LMT' : 'SL'}<span class="text-xs text-base-content/50"> {o.validity}</span>
+                {#if o.role === 'ENTRY'}
+                  <span class="badge badge-ghost badge-xs" title={o.bracket ? 'Stop-loss / target are placed when this fills' : 'Stop-loss / target attached'}>{o.bracket ? 'bracket · pending' : 'bracket'}</span>
+                {:else if o.role === 'TARGET'}
+                  <span class="badge badge-success badge-outline badge-xs" title="Bracket target">target</span>
+                {:else if o.role === 'STOP'}
+                  <span class="badge badge-error badge-outline badge-xs" title="Bracket stop-loss">stop-loss</span>
+                {:else if o.role === 'SETTLE'}
+                  <span class="badge badge-warning badge-outline badge-xs" title="Closed at expiry">expiry</span>
+                {/if}
+              </td>
               <td class="num text-right">{o.qty}</td>
               <td class="num text-right">{num(o.price)}</td>
               <td class="num text-right">{o.orderType === 'STOP_LOSS' ? num(o.triggerPrice) : '—'}</td>
@@ -177,7 +193,7 @@
               <td class="num text-right">{o.filledQty ? num(o.avgPrice) : '—'}</td>
               <td>
                 <span class="badge badge-sm {statusClass(o.status)}">{o.status}</span>
-                {#if o.message && o.status !== 'TRADED'}
+                {#if o.message && (o.status !== 'TRADED' || o.role === 'SETTLE' || o.role === 'ENTRY')}
                   <div class="max-w-56 truncate text-xs text-base-content/60" title={o.message}>{o.message}</div>
                 {/if}
               </td>

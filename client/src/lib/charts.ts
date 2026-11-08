@@ -5,6 +5,20 @@ export const INTERVALS = ['1m', '3m', '5m', '15m', '30m', '60m', '1d'];
 /** Display offset so the time axis shows IST (lightweight-charts renders UTC). */
 export const IST_SHIFT = 19800;
 
+const SESSION_OPEN = 9 * 3600 + 15 * 60;
+
+/**
+ * Start (epoch seconds, UTC) of the candle containing `ts` for an interval such
+ * as `5m` or `1d`. Mirrors `charts::resample::bucket_start` in the backend:
+ * intraday buckets are aligned to the 09:15 IST open, daily ones to IST midnight.
+ */
+export function bucketStart(ts: number, interval: string): number {
+  if (interval === '1d') return Math.floor((ts + IST_SHIFT) / 86400) * 86400 - IST_SHIFT;
+  const n = parseInt(interval, 10);
+  const step = (Number.isFinite(n) && n > 0 ? n : 1) * 60;
+  return Math.floor((ts + IST_SHIFT - SESSION_OPEN) / step) * step + SESSION_OPEN - IST_SHIFT;
+}
+
 export const INDICATOR_PRESETS: IndicatorSpec[] = [
   { key: 'ema:9', kind: 'ema', period: 9 },
   { key: 'ema:21', kind: 'ema', period: 21 },

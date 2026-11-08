@@ -1,5 +1,6 @@
-//! Folds live ticks into in-memory 1m bars, pushes updates to the UI once a
-//! second (`bar-update` event) and flushes to SQLite every few seconds.
+//! Folds live ticks into in-memory 1m bars, pushes changed bars to the UI
+//! four times a second (`bar-update` event) and flushes to SQLite every few
+//! seconds.
 //! Only trades inside the 09:15-15:30 IST session are recorded.
 
 use chrono::{DateTime, Datelike, Timelike, Weekday};
@@ -153,9 +154,11 @@ impl Recorder {
     }
 
     pub fn spawn(self: Arc<Self>, app: AppHandle, flush_secs: u64) {
-        let flush_every = flush_secs.max(1);
+        // The UI tick is 250 ms; the DB flush keeps its own seconds-based cadence.
+        let flush_every = flush_secs.max(1) * 4;
         tauri::async_runtime::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            let mut ticker = tokio::time::interval(Duration::from_millis(250));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut n: u64 = 0;
             loop {
                 ticker.tick().await;

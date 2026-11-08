@@ -219,6 +219,12 @@ export interface OrderRow {
   createdAt: string;
   updatedAt: string;
   tradeDate: string;
+  /** Bracket group: the entry order's id, shared by its target and stop-loss legs. */
+  groupId: string;
+  /** '' plain order | ENTRY (bracket attached) | TARGET | STOP | SETTLE (expiry settlement). */
+  role: '' | 'ENTRY' | 'TARGET' | 'STOP' | 'SETTLE';
+  /** On an ENTRY: legs waiting for the fill (JSON). Empty once they are placed. */
+  bracket: string;
 }
 
 export interface TradeRow {
@@ -256,6 +262,15 @@ export interface PlaceOrderInput {
   lots: number;
   price: number;
   triggerPrice?: number;
+  /** Stop-loss and / or target placed once this order fills (paper accounts only). */
+  bracket?: BracketInput;
+}
+
+export interface BracketInput {
+  target?: number;
+  stopTrigger?: number;
+  /** Limit price of the stop-loss; the backend derives it from the trigger when left out. */
+  stopPrice?: number;
 }
 
 export interface ContractInfo {
@@ -286,6 +301,8 @@ export interface Position {
 }
 
 export interface QuoteView {
+  /** Instrument key; follow it in the live `quotes` store. */
+  key: string;
   ltp: number | null;
   ageSecs: number | null;
   live: boolean;

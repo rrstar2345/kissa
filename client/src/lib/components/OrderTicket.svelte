@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/api';
   import { num } from '$lib/format';
+  import { quotes } from '$lib/quotes.svelte';
   import { contractName } from '$lib/trading.svelte';
   import type {
     Account,
@@ -33,6 +34,10 @@
   let lots = $state(1);
   let price = $state<number | null>(null);
   let trigger = $state<number | null>(null);
+  // Stop-loss / target attached to the entry (paper accounts only).
+  let useBracket = $state(false);
+  let target = $state<number | null>(null);
+  let stopTrigger = $state<number | null>(null);
   let info = $state<ContractInfo | null>(null);
   let infoError = $state('');
   let error = $state('');
@@ -41,8 +46,17 @@
   let refreshing = $state(false);
   let quote = $state<QuoteView | null>(null);
 
+  // The price follows the pushed quote stream tick by tick; `quote` (from the
+  // backend) only names the instrument and covers the time before the first tick.
+  const px = $derived(quote ? quotes.get(quote.key) : undefined);
+  const ltp = $derived(px ? px.ltp : (quote?.ltp ?? null));
+  const isLive = $derived(px ? quotes.isFresh(px) : (quote?.live ?? false));
+  const ageSecs = $derived(px ? Math.max(0, quotes.nowSecs - px.rx) : (quote?.ageSecs ?? null));
+
   const account = $derived(accounts.find((a) => a.id === accountId) ?? null);
   const qty = $derived(info?.lotSize ? lots * info.lotSize : null);
+  const canBracket = $derived(account?.kind === 'paper');
+  const bracketOn = $derived(useBracket && canBracket);
   const needsSecurityId = $derived(account?.kind === 'dhan' && info !== null && !info.securityId);
 
   // Load tradable accounts once.
@@ -63,6 +77,9 @@
     side = r.side;
     price = r.price;
     trigger = null;
+    useBracket = false;
+    target = null;
+    stopTrigger = null;
     orderType = 'LIMIT';
     lots = 1;
     error = '';
@@ -70,7 +87,9 @@
     loadInfo(r);
   });
 
-  // Live price of the contract, refreshed while the ticket is open.
+  // Look the contract up while the ticket is open. Ticks arrive through the
+  // `quotes` store; the slow poll only re-reads the stored price when the
+  // market is quiet or closed.
   $effect(() => {
     const r = request;
     quote = null;
@@ -85,7 +104,7 @@
       }
     };
     poll();
-    const t = setInterval(poll, 1000);
+    const t = setInterval(poll, 5000);
     return () => {
       stop = true;
       clearInterval(t);
@@ -93,7 +112,7 @@
   });
 
   function useLtp() {
-    if (quote?.ltp) price = Math.max(0.05, Math.round(quote.ltp * 20) / 20);
+    if (ltp) price = Math.max(0.05, Math.round(ltp * 20) / 20);
   }
 
   async function loadInfo(r: TicketRequest) {
@@ -126,6 +145,7 @@
     if (!price || price <= 0) return (error = 'Enter a limit price.');
     if (orderType === 'STOP_LOSS' && (!trigger || trigger <= 0)) return (error = 'Enter a trigger price.');
     if (!Number.isInteger(lots) || lots < 1) return (error = 'Lots must be a whole number ≥ 1.');
+    if (bracketOn && !target && !stopTrigger) return (error = 'Enter a target, a stop-loss, or turn the bracket off.');
     busy = true;
     try {
       placed = await api.placeOrder({
@@ -140,7 +160,8 @@
         validity,
         lots,
         price,
-        triggerPrice: orderType === 'STOP_LOSS' ? (trigger ?? undefined) : undefined
+        triggerPrice: orderType === 'STOP_LOSS' ? (trigger ?? undefined) : undefined,
+        bracket: bracketOn ? { target: target || undefined, stopTrigger: stopTrigger || undefined } : undefined
       });
       onplaced?.(placed);
     } catch (e) {
@@ -224,14 +245,40 @@
         {/if}
       </div>
 
+      {#if canBracket}
+        <div class="flex flex-col gap-2 rounded-lg border border-base-300 px-3 py-2">
+          <label class="flex cursor-pointer items-center justify-between text-xs">
+            <span class="font-medium">Stop-loss / target <span class="text-base-content/50">(bracket)</span></span>
+            <input type="checkbox" class="toggle toggle-xs" bind:checked={useBracket} />
+          </label>
+          {#if useBracket}
+            <div class="grid grid-cols-2 gap-3">
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-base-content/60">Target</span>
+                <input class="input input-sm num" type="number" min="0.05" step="0.05" bind:value={target}
+                  placeholder={side === 'BUY' ? 'above entry' : 'below entry'} />
+              </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-base-content/60">Stop-loss</span>
+                <input class="input input-sm num" type="number" min="0.05" step="0.05" bind:value={stopTrigger}
+                  placeholder={side === 'BUY' ? 'below entry' : 'above entry'} />
+              </label>
+            </div>
+            <p class="text-xs text-base-content/50">
+              Placed when the entry fills. When one executes, the other is cancelled.
+            </p>
+          {/if}
+        </div>
+      {/if}
+
       <div class="rounded-lg bg-base-200 px-3 py-2 text-xs">
         <div class="flex items-center justify-between">
           <span class="text-base-content/60">LTP</span>
           <span class="flex items-center gap-2">
-            <span class="num text-sm font-semibold">{quote?.ltp != null ? num(quote.ltp) : '—'}</span>
-            {#if quote?.ltp != null}
-              <span class="badge badge-xs {quote.live ? 'badge-success' : 'badge-ghost'}"
-                title={quote.ageSecs != null ? `${quote.ageSecs}s old` : ''}>{quote.live ? 'live' : 'last'}</span>
+            <span class="num text-sm font-semibold">{ltp != null ? num(ltp) : '—'}</span>
+            {#if ltp != null}
+              <span class="badge badge-xs {isLive ? 'badge-success' : 'badge-ghost'}"
+                title={ageSecs != null ? `${ageSecs}s old` : ''}>{isLive ? 'live' : 'last'}</span>
               <button class="btn btn-ghost btn-xs" onclick={useLtp} title="Set the price to the LTP">Use</button>
             {/if}
           </span>

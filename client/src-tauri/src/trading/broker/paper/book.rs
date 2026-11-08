@@ -116,6 +116,9 @@ pub fn sample_order(side: &str, kind: &str, price: f64, trigger: f64) -> OrderRo
         created_at: String::new(),
         updated_at: String::new(),
         trade_date: String::new(),
+        group_id: String::new(),
+        role: String::new(),
+        bracket: String::new(),
     }
 }
 

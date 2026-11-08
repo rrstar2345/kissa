@@ -15,11 +15,21 @@ class MarketStore {
       this.indices[e.payload.indexName] = e.payload;
     });
     await this.refresh();
-    this.timer = setInterval(() => this.refresh(), 3000);
+    // Status is a small read (clock, mode, stream states): once a second keeps
+    // the header clock ticking and stream changes visible almost at once.
+    this.timer = setInterval(() => this.refresh(), 1000);
   }
 
+  private busy = false;
+
   async refresh() {
-    this.status = await api.marketStatus().catch(() => this.status);
+    if (this.busy) return; // never queue calls behind a slow one
+    this.busy = true;
+    try {
+      this.status = await api.marketStatus().catch(() => this.status);
+    } finally {
+      this.busy = false;
+    }
   }
 
   stop() {

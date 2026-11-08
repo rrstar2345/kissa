@@ -4,11 +4,17 @@
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
+  import { liveAccount, livePosition } from '$lib/live';
   import { contractName, trading } from '$lib/trading.svelte';
   import type { Dashboard, DiaryDay } from '$lib/types';
 
-  let dash = $state<Dashboard | null>(null);
+  let dash = $state.raw<Dashboard | null>(null);
   let error = $state('');
+
+  // The dashboard is fetched when orders change; prices and P&L follow the
+  // live quote stream, so they move with the market without any polling.
+  const positions = $derived((dash?.positions ?? []).map(livePosition));
+  const accounts = $derived((dash?.accounts ?? []).map((a) => liveAccount(a, positions)));
 
   // diary
   const daysAgo = (n: number) => new Date(Date.now() + 5.5 * 3600_000 - n * 86400_000).toISOString().slice(0, 10);
@@ -43,8 +49,9 @@
     }
   }
 
+  // Safety net only (a missed event, a long sleep): live prices do not need it.
   onMount(() => {
-    const t = setInterval(loadDash, 3000);
+    const t = setInterval(loadDash, 30_000);
     return () => clearInterval(t);
   });
 
@@ -70,7 +77,7 @@
       {#if dash}<span class="num text-xs text-base-content/60">{dash.tradeDate}</span>{/if}
     </div>
 
-    {#if dash && !dash.accounts.length}
+    {#if dash && !accounts.length}
       <div class="card border border-base-300 bg-base-100">
         <div class="card-body items-center py-10 text-center">
           <p class="font-medium">No trading accounts yet.</p>
@@ -80,7 +87,7 @@
     {/if}
 
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-      {#each dash?.accounts ?? [] as a (a.accountId)}
+      {#each accounts as a (a.accountId)}
         <div class="card border border-base-300 bg-base-100">
           <div class="card-body gap-2 p-4">
             <div class="flex items-center gap-2">
@@ -106,11 +113,11 @@
     </div>
   </section>
 
-  {#if dash?.positions.length}
+  {#if positions.length}
     <section class="flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <h2 class="font-semibold">Open positions</h2>
-        <ExitAllButton positions={dash.positions} ondone={loadDash} />
+        <ExitAllButton {positions} ondone={loadDash} />
       </div>
       <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
         <table class="table table-sm">
@@ -118,7 +125,7 @@
             <tr><th>Account</th><th>Contract</th><th>Product</th><th class="text-right">Net qty</th><th class="text-right">Avg</th><th class="text-right">LTP</th><th class="text-right">Unrealised</th><th></th></tr>
           </thead>
           <tbody>
-            {#each dash.positions as p (p.accountId + p.instrument + p.product)}
+            {#each positions as p (p.accountId + p.instrument + p.product)}
               <tr>
                 <td>{p.accountName}</td>
                 <td class="whitespace-nowrap">{contractName(p)}</td>
@@ -144,7 +151,7 @@
       <h2 class="font-semibold">Trader's diary</h2>
       <select class="select select-sm w-44" bind:value={diaryAccount}>
         <option value="">All accounts</option>
-        {#each dash?.accounts ?? [] as a}<option value={a.accountId}>{a.name}</option>{/each}
+        {#each accounts as a}<option value={a.accountId}>{a.name}</option>{/each}
       </select>
       <input class="input input-sm w-40" type="date" bind:value={from} max={to} />
       <span class="text-sm text-base-content/60">to</span>

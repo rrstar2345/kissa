@@ -6,12 +6,15 @@ use chrono::NaiveDate;
 use std::time::Duration;
 use tracing::debug;
 
+use super::bracket::validate_bracket;
 use super::TradingService;
 use crate::accounts;
 use crate::charts::instrument::option_key;
 use crate::trading::broker::{BrokerEvent, Contract};
 use crate::trading::pricing::on_tick;
-use crate::trading::{is_open_status, now_ts, scrip, store, today_ist, ContractInfo, OrderRow, PlaceOrderInput};
+use crate::trading::{
+    is_open_status, now_ts, scrip, store, today_ist, ContractInfo, OrderRow, PlaceOrderInput, ROLE_ENTRY,
+};
 
 /// A validated, normalised order request.
 struct Checked {
@@ -143,6 +146,18 @@ impl TradingService {
 
         let acct = accounts::get(&self.pool, &input.account_id).await?;
         let broker = self.broker_for_kind(&acct.kind)?;
+
+        // Stop-loss / target legs (paper only; a live broker keeps its own bracket rules).
+        let bracket = match &input.bracket {
+            Some(b) => {
+                let checked = validate_bracket(&c.side, input.price, b, self.cfg.trading.exit_buffer_ticks)?;
+                if checked.is_some() && acct.kind != "paper" {
+                    return Err(anyhow!("Bracket orders (stop-loss / target) are available on paper accounts only"));
+                }
+                checked
+            }
+            None => None,
+        };
         let contract = self
             .resolve_contract(&c.symbol, &input.expiry, input.strike, input.is_call, broker.needs_instrument_ids())
             .await?;
@@ -176,6 +191,12 @@ impl TradingService {
             created_at: now.clone(),
             updated_at: now,
             trade_date: today_ist(),
+            group_id: if bracket.is_some() { uid.to_string() } else { String::new() },
+            role: if bracket.is_some() { ROLE_ENTRY.into() } else { String::new() },
+            bracket: match &bracket {
+                Some(b) => serde_json::to_string(b)?,
+                None => String::new(),
+            },
         };
 
         // Market hours, funds, credentials: a failure leaves no stray order.
@@ -281,6 +302,7 @@ mod tests {
             lots: 1,
             price: 100.0,
             trigger_price: None,
+            bracket: None,
         }
     }
 
@@ -288,6 +310,17 @@ mod tests {
     fn valid_orders_are_normalised() {
         let c = validate(&input()).unwrap();
         assert_eq!((c.symbol.as_str(), c.side.as_str(), c.product.as_str()), ("NIFTY", "BUY", "INTRADAY"));
+    }
+
+    #[test]
+    fn bracket_input_is_optional_in_the_request() {
+        let json = r#"{"accountId":"a","symbol":"NIFTY","expiry":"2099-01-29","strike":24000,"isCall":true,
+            "side":"BUY","product":"INTRADAY","orderType":"LIMIT","validity":"DAY","lots":1,"price":100}"#;
+        let plain: PlaceOrderInput = serde_json::from_str(json).unwrap();
+        assert!(plain.bracket.is_none());
+        let with = json.replace("\"price\":100", "\"price\":100,\"bracket\":{\"target\":120,\"stopTrigger\":90}");
+        let b = serde_json::from_str::<PlaceOrderInput>(&with).unwrap().bracket.unwrap();
+        assert_eq!((b.target, b.stop_trigger, b.stop_price), (Some(120.0), Some(90.0), None));
     }
 
     #[test]

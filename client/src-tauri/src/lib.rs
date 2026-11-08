@@ -73,6 +73,22 @@ pub fn run() {
                 }
             });
 
+            // Live prices: push every changed price to the UI in one batched
+            // event every 100 ms, so positions, P&L and the order ticket update
+            // as the market moves instead of on a polling timer.
+            let (quote_app, quote_ltp) = (app.handle().clone(), state.ltp.clone());
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tick.tick().await;
+                    let batch = quote_ltp.drain_changed();
+                    if !batch.is_empty() {
+                        let _ = quote_app.emit("quotes", batch);
+                    }
+                }
+            });
+
             // Chart data: live bars are folded in memory and flushed to SQLite.
             state.recorder.clone().spawn(app.handle().clone(), config.charts.flush_secs);
             charts::store::spawn_maintenance(state.db.clone(), config.charts.clone());

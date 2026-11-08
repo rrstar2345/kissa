@@ -3,14 +3,18 @@
 //! * `orders`: validation, routing to the right `Broker`, cancel / modify.
 //! * `exit`: Exit position / Exit all.
 //! * `squareoff`: paper INTRADAY auto square-off.
+//! * `bracket`: stop-loss / target legs attached to an entry (paper), with OCO.
+//! * `settle`: paper expiry settlement at the contract's last 1m close.
 //! * `views`: dashboard, diary, order / trade lists, quotes.
 //!
 //! Every state change, whichever broker it came from, goes through
 //! `apply_state`, which updates the local order, books new fills in the
 //! ledger and emits `order-update`.
 
+mod bracket;
 mod exit;
 mod orders;
+mod settle;
 mod squareoff;
 mod views;
 
@@ -286,9 +290,10 @@ impl TradingService {
             if !(dp.is_finite() && dp > 0.0) {
                 dp = avg;
             }
+            // Expiry settlement is not an order sent to a broker: no brokerage.
             let brokerage = match self.brokers.get(&o.account_kind) {
-                Some(b) => b.brokerage(&o, dp, dq).await,
-                None => 0.0,
+                Some(b) if o.role != super::ROLE_SETTLE => b.brokerage(&o, dp, dq).await,
+                _ => 0.0,
             };
             {
                 let _guard = self.ledger.lock().await;
@@ -313,13 +318,17 @@ impl TradingService {
         store::save_order_state(&self.pool, &o).await?;
         let row = store::get_order(&self.pool, &o.id).await?.unwrap_or(o);
         self.emit_order(&row);
+        // Bracket follow-ups: place the legs after an entry fills, cancel the
+        // other leg after one executes.
+        self.after_state(&row).await;
         Ok(row)
     }
 
     // --------------------------------------------------------------- sweeper ---
 
-    /// Every 5 s: paper auto square-off; every minute: re-read the order
-    /// books of accounts with open orders (catches missed live updates).
+    /// Every 5 s: paper auto square-off; every minute: settle expired paper
+    /// positions and re-read the order books of accounts with open orders
+    /// (catches missed live updates).
     async fn sweeper(self: Arc<Self>) {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut n: u64 = 0;
@@ -327,6 +336,9 @@ impl TradingService {
             tick.tick().await;
             n += 1;
             self.auto_square_off(n == 1).await;
+            if n == 1 || n % 12 == 0 {
+                self.settle_expired().await;
+            }
             if n % 12 == 0 {
                 for id in self.open_order_accounts().await {
                     if let Err(e) = self.sync_account(&id).await {

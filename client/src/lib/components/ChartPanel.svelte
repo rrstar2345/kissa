@@ -20,6 +20,7 @@
     INDICATOR_PRESETS,
     INTERVALS,
     IST_SHIFT,
+    bucketStart,
     instrumentLabel,
     parseInstrument,
     presetLabel,
@@ -107,7 +108,11 @@
 
     let unlisten: UnlistenFn | null = null;
     listen<BarEvent[]>('bar-update', (e) => {
-      if (config.instrument && e.payload.some((b) => b.instrument === config.instrument)) schedule(1000);
+      if (!config.instrument || !e.payload.some((b) => b.instrument === config.instrument)) return;
+      // The candle moves with every update (4 a second); volume and indicators
+      // need the backend, so they refresh on a coalesced 2 s reload.
+      applyLive(e.payload);
+      schedule(2000);
     }).then((u) => (unlisten = u));
 
     return () => {
@@ -139,6 +144,31 @@
     if (chart) schedule(0);
   });
 
+  /** The candle currently on the right edge, kept so live updates can extend it. */
+  let lastCandle: { time: UTCTimestamp; open: number; high: number; low: number; close: number } | null = null;
+
+  /** Fold live 1m bar updates into the last candle (any interval) without a reload. */
+  function applyLive(events: BarEvent[]) {
+    if (!candles || !config.instrument) return;
+    // Only once the panel shows this instrument / interval (not mid-switch).
+    if (lastKey !== `${config.instrument}|${config.interval}`) return;
+    for (const b of events) {
+      if (b.instrument !== config.instrument) continue;
+      const time = t(bucketStart(b.ts, config.interval));
+      if (lastCandle && time < lastCandle.time) continue; // older than the visible edge
+      const next =
+        lastCandle && time === lastCandle.time
+          ? { ...lastCandle, high: Math.max(lastCandle.high, b.high), low: Math.min(lastCandle.low, b.low), close: b.close }
+          : { time, open: b.open, high: b.high, low: b.low, close: b.close };
+      try {
+        candles.update(next);
+        lastCandle = next;
+      } catch {
+        /* series moved on (reload in flight): the next reload redraws it */
+      }
+    }
+  }
+
   function schedule(ms: number) {
     if (timer) return; // coalesce bursts
     timer = setTimeout(() => {
@@ -169,6 +199,8 @@
     candles.setData(
       data.bars.map((b) => ({ time: t(b.ts), open: b.open, high: b.high, low: b.low, close: b.close }))
     );
+    const edge = data.bars[data.bars.length - 1];
+    lastCandle = edge ? { time: t(edge.ts), open: edge.open, high: edge.high, low: edge.low, close: edge.close } : null;
     syncVolume(data);
     syncLines(data.lines);
     syncMarkers(data);

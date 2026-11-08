@@ -15,7 +15,9 @@
   let symbol = $state('NIFTY');
   let expiries = $state<ExpiryItem[]>([]);
   let expiryValue = $state('');
-  let snapshot = $state<ChainSnapshot | null>(null);
+  // Replaced wholesale on every push and never edited in place, so skip the
+  // deep reactive proxy (a full chain is hundreds of nested objects).
+  let snapshot = $state.raw<ChainSnapshot | null>(null);
   let error = $state('');
   let busy = $state(false);
   let visible = $state<string[]>([...DEFAULT_VISIBLE]);

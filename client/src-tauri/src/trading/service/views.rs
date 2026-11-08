@@ -30,9 +30,9 @@ impl TradingService {
         match self.ltp.get(&key) {
             Some(q) => {
                 let age = (market_clock::get_ist_now().timestamp() - q.at).max(0);
-                QuoteView { ltp: Some(q.ltp), age_secs: Some(age), live: age <= FRESH_SECS }
+                QuoteView { key, ltp: Some(q.ltp), age_secs: Some(age), live: age <= FRESH_SECS }
             }
-            None => QuoteView { ltp: None, age_secs: None, live: false },
+            None => QuoteView { key, ltp: None, age_secs: None, live: false },
         }
     }
 

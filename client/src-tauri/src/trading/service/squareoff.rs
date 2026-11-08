@@ -100,6 +100,9 @@ impl TradingService {
             created_at: now.clone(),
             updated_at: now,
             trade_date: today_ist(),
+            group_id: String::new(),
+            role: String::new(),
+            bracket: String::new(),
         };
         store::insert_order(&self.pool, &order).await?;
         let qty = order.qty;

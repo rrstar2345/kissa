@@ -56,6 +56,13 @@ pub fn today_ist() -> String {
 // Stored rows (also sent to the UI)
 // ---------------------------------------------------------------------------
 
+/// `OrderRow.role` values.
+pub const ROLE_ENTRY: &str = "ENTRY";
+pub const ROLE_TARGET: &str = "TARGET";
+pub const ROLE_STOP: &str = "STOP";
+/// Synthetic order that closes an expired contract at its settlement price.
+pub const ROLE_SETTLE: &str = "SETTLE";
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderRow {
@@ -90,6 +97,15 @@ pub struct OrderRow {
     pub updated_at: String,
     /// IST date the order was placed.
     pub trade_date: String,
+    /// Bracket group: the entry order's id, shared by its target and stop-loss
+    /// legs. Empty for orders that are not part of a bracket.
+    pub group_id: String,
+    /// Empty (plain order) | `ENTRY` (bracket attached) | `TARGET` | `STOP` |
+    /// `SETTLE` (expiry settlement). See the `ROLE_*` constants.
+    pub role: String,
+    /// On an `ENTRY` order: the stop-loss / target waiting for the entry to
+    /// fill (JSON of `BracketInput`). Cleared once the legs are placed.
+    pub bracket: String,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -144,6 +160,26 @@ pub struct PlaceOrderInput {
     pub price: f64,
     #[serde(default)]
     pub trigger_price: Option<f64>,
+    /// Stop-loss and / or target to place once this order fills (paper
+    /// accounts only). Whichever leg executes first cancels the other.
+    #[serde(default)]
+    pub bracket: Option<BracketInput>,
+}
+
+/// Exit legs attached to an entry order. Prices are multiples of 0.05.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BracketInput {
+    /// Profit target: a LIMIT order on the opposite side.
+    #[serde(default)]
+    pub target: Option<f64>,
+    /// Stop-loss trigger: a STOP_LOSS (stop-limit) order on the opposite side.
+    #[serde(default)]
+    pub stop_trigger: Option<f64>,
+    /// Limit price of the stop-loss once triggered. Left out, it is the
+    /// trigger pushed `trading.exit_buffer_ticks` ticks the unfavourable way.
+    #[serde(default)]
+    pub stop_price: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,6 +270,8 @@ pub struct BrokerStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteView {
+    /// Instrument key; the UI follows it on the `quotes` event.
+    pub key: String,
     pub ltp: Option<f64>,
     /// Seconds since the price last changed hands in our feed.
     pub age_secs: Option<i64>,

@@ -51,6 +51,7 @@ impl TradingService {
                 lots,
                 price,
                 trigger_price: None,
+                bracket: None,
             })
             .await?;
         Ok((order, cancelled))
