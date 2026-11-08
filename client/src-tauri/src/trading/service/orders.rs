@@ -162,6 +162,18 @@ impl TradingService {
             .resolve_contract(&c.symbol, &input.expiry, input.strike, input.is_call, broker.needs_instrument_ids())
             .await?;
 
+        // Risk controls: kill switch, halts, lot / position / window / loss
+        // limits. Orders that only reduce a position always pass.
+        self.check_risk(
+            &acct,
+            &c.side,
+            &c.product,
+            &option_key(&c.symbol, &input.expiry, input.strike, input.is_call),
+            input.lots,
+            contract.lot_size * input.lots,
+        )
+        .await?;
+
         let uid = uuid::Uuid::new_v4();
         let now = now_ts();
         let mut order = OrderRow {

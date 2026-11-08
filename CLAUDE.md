@@ -4,6 +4,7 @@
 - Keep answers concise. Do NOT create extra documents (summaries, quick references) unless asked; confirm first. Updating `CLAUDE.md` and the client `README.md` is fine when asked.
 - Before big work, confirm scope: ask with options plus a recommendation, and review designs with the user before coding.
 - **Do not install Rust/Cargo or compile.** The user builds and tests. Verify the frontend only (`npm i -g pnpm`, `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build` in `client/`) and re-read Rust carefully.
+- **The user pushes to GitHub manually.** Do not push, and do not try to attach the repo or work around push errors. Committing locally is fine only if asked (branch first, never on `main`); otherwise just leave changes in the working tree and present the files.
 - When finished: present the edited/created files; zip them if more than 5 (`git status --porcelain --untracked-files=all | grep -v node_modules`). If files are moved or deleted, say which old ones to remove.
 
 ## Repos
@@ -34,18 +35,22 @@ Stack: Tauri v2 (Rust) + SvelteKit/Svelte 5 + Tailwind v4 + DaisyUI 5 (themes `k
   - **Exit / Exit All** (`service/exit.rs`): cancels the contract's open orders, then LIMIT at LTP +- `trading.exit_buffer_ticks`.
   - **Order gate** (`trading/server.rs`): `place`/`modify` require the proxy to authenticate the client (cached `paper` session re-validated per call). Cancel is not gated.
 - **Settings page**: server connection (URL, port, API key in keychain) and a `settings.json` editor. Only the `server` section applies live; everything else needs a restart. `trading.paper {enforce_margin, short_margin_pct, slippage_ticks, latency_ms, auto_square_off, square_off_time}`.
-- **Real-time UI**: `quotes` event (100 ms batches), `bar-update`, `chain-snapshot`, `order-update`, `broker-status`, `index-tick`.
+- **Risk controls (Roadmap #2 done; Rust not yet built/tested by the user at time of writing)**: `/risk` page (per-account limits) and a kill switch button in the header.
+  - Limits per account in SQLite `risk_limits` (JSON `RiskLimits`): `enabled` master switch, `maxLotsPerOrder`, `maxOpenPositions` (counts contracts held or with a resting entry order), `maxDailyLoss` (rupees), `squareOffOnBreach`, trading window (`windowEnabled/Start/End`, IST HH:MM, start inclusive, end exclusive). 0 = limit off. Halts in `risk_halts` (account id `*` = global kill switch).
+  - **Check** (`TradingService::check_risk`, called in `place` after contract resolution, before insert): kill switch, active halt, then the limits. **Orders that only reduce a position (opposite side, qty <= held) always pass**, so Exit, Exit All, brackets and square-off are never blocked. Bracket legs and settlement bypass `place`.
+  - **Daily loss monitor** (`enforce_risk`, every 5 s in the sweeper): net P&L today (realised + unrealised - charges, same as the dashboard) <= -`maxDailyLoss` raises a `daily_loss` halt for the IST day, cancels resting entry orders (not stop/target legs) and, if `squareOffOnBreach`, calls `exit_all`. "Resume today" sets `released`; the breach is not raised again that day. The kill switch (`set_kill_switch(on, flatten)`) persists until released and optionally flattens.
+  - **For algos**: call `TradingService::halt_reason(account_id)` (kill switch or daily-loss halt); disarm on `Some`. `check_risk` already covers their orders.
+  - Code: `trading/risk.rs` (limits, pure `check`, `is_reducing`, store, unit tests), `trading/service/risk.rs` (service wiring); commands `get_risk, save_risk_limits, set_kill_switch, resume_account`; event `risk-update`. Frontend `routes/risk`, `components/KillSwitch.svelte`, `trading.riskVersion`.
+- **Real-time UI**: `quotes` event (100 ms batches), `bar-update`, `chain-snapshot`, `order-update`, `broker-status`, `index-tick`, `risk-update`.
 
 ## Roadmap (not started)
-Confirm scope with the user before starting each.
-
-**2. Risk controls (needed before 2 and 3).** Max daily loss (auto-disarm algos, optional square-off), max lots per order, max open positions, allowed trading window, global kill switch. Apply in `TradingService::place` so manual, copier and algo paths are all covered.
+Confirm scope with the user before starting each. Item numbers are kept from the original list (#2 risk controls is done).
 
 **3. Alerts.** Telegram bot (token in keychain, chat ids) and email (SMTP, password in keychain). Events: signals, fills, rejections, algo actions, copier failures, connection loss, token expiry, daily P&L summary. Per-event toggles, throttling/de-duplication, test button.
 
 **4. Trade copier.** One master account, N child accounts, each with a factor (lot multiplier plus rounding rule, e.g. round down, minimum 1 lot or skip). A master execution replicates to children. Decide with the user: replicate on placement or on fill (recommend on fill), how modify/cancel propagate, behaviour when a child is rejected (continue others, alert), per-child enable/disable. Children may be paper or Dhan; every child order must pass the order gate and risk checks. Keep a link table master order -> child orders for the diary.
 
-**5. Algo trading.** Autonomous orders from rulesets (item 1) with an action (side, product, lots, price rule, stop/target exit). Needs arm/disarm per algo, paper-only until explicitly promoted, an event journal of every decision, and the risk controls in item 5. Evaluate on bar close using `rules::eval`. Limitation to state: the app must stay running (no headless mode).
+**5. Algo trading.** Autonomous orders from rulesets (item 1) with an action (side, product, lots, price rule, stop/target exit). Needs arm/disarm per algo, paper-only until explicitly promoted, an event journal of every decision, and the risk controls (done; use `halt_reason`). Evaluate on bar close using `rules::eval`. Limitation to state: the app must stay running (no headless mode).
 
 **6. Backtesting.** Run a ruleset/algo over stored 1m/daily bars (Fyers backfill helps): trades, P&L after estimated charges, win rate, max drawdown. Reuse `rules::eval::evaluate`.
 

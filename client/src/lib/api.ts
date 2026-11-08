@@ -8,6 +8,7 @@ import type {
   DiaryDay,
   ExitAllResult,
   IndicatorSpec,
+  KillResult,
   InstrumentList,
   ExpiryItem,
   IndexTick,
@@ -15,6 +16,8 @@ import type {
   OrderRow,
   PlaceOrderInput,
   QuoteView,
+  RiskLimits,
+  RiskOverview,
   Ruleset,
   SaveAccountInput,
   ServerSettings,
@@ -68,6 +71,11 @@ export const api = {
   exitPosition: (accountId: string, instrument: string, product: string) =>
     invoke<OrderRow>('exit_position', { accountId, instrument, product }),
   exitAll: (accountId?: string | null) => invoke<ExitAllResult>('exit_all', { accountId: accountId ?? null }),
+  getRisk: () => invoke<RiskOverview>('get_risk'),
+  saveRiskLimits: (accountId: string, limits: RiskLimits) =>
+    invoke<RiskLimits>('save_risk_limits', { accountId, limits }),
+  setKillSwitch: (on: boolean, flatten = false) => invoke<KillResult>('set_kill_switch', { on, flatten }),
+  resumeAccount: (accountId: string) => invoke<void>('resume_account', { accountId }),
   getQuote: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
     invoke<QuoteView>('get_quote', { symbol, expiry, strike, isCall }),
   getDashboard: (accountId?: string | null) =>

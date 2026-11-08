@@ -7,6 +7,7 @@
   import { theme } from '$lib/theme.svelte';
   import { trading } from '$lib/trading.svelte';
   import { num, signed, trend } from '$lib/format';
+  import KillSwitch from '$lib/components/KillSwitch.svelte';
 
   let { children } = $props();
 
@@ -16,6 +17,7 @@
     { href: '/charts', label: 'Charts', icon: 'M3 3v18h18M7 14l4-4 3 3 5-6' },
     { href: '/signals', label: 'Signals', icon: 'M3 12h4l3-8 4 16 3-8h4' },
     { href: '/orders', label: 'Orders', icon: 'M9 5h10M9 12h10M9 19h10M4 5h.01M4 12h.01M4 19h.01' },
+    { href: '/risk', label: 'Risk', icon: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM12 8v5M12 16h.01' },
     { href: '/accounts', label: 'Accounts', icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM4 21a8 8 0 0116 0' },
     { href: '/settings', label: 'Settings', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z' }
   ];
@@ -78,6 +80,7 @@
       {/each}
 
       <div class="ml-auto flex items-center gap-3 text-xs">
+        <KillSwitch />
         {#if market.status}
           <span class="num text-base-content/70">IST {market.status.istTime}</span>
           <span class="badge badge-sm {market.status.withinWindow ? 'badge-success' : 'badge-ghost'}">

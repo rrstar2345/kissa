@@ -360,6 +360,37 @@ pub async fn exit_all(account_id: Option<String>, state: State<'_, SharedState>)
     state.trading.exit_all(account_id.as_deref()).await.map_err(err)
 }
 
+// ---------------------------------------------------------------- risk ---
+
+use crate::trading::risk::{KillResult, RiskLimits, RiskOverview};
+
+/// Limits, halts and today's P&L of every account, plus the kill switch.
+#[tauri::command]
+pub async fn get_risk(state: State<'_, SharedState>) -> Res<RiskOverview> {
+    state.trading.risk_overview().await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn save_risk_limits(
+    account_id: String,
+    limits: RiskLimits,
+    state: State<'_, SharedState>,
+) -> Res<RiskLimits> {
+    state.trading.save_risk_limits(&account_id, limits).await.map_err(err)
+}
+
+/// Kill switch on (optionally flattening every position) or off.
+#[tauri::command]
+pub async fn set_kill_switch(on: bool, flatten: bool, state: State<'_, SharedState>) -> Res<KillResult> {
+    state.trading.set_kill_switch(on, flatten).await.map_err(err)
+}
+
+/// Lift today's daily-loss halt of an account.
+#[tauri::command]
+pub async fn resume_account(account_id: String, state: State<'_, SharedState>) -> Res<()> {
+    state.trading.resume_account(&account_id).await.map_err(err)
+}
+
 /// Latest price of a contract, for the order ticket.
 #[tauri::command]
 pub fn get_quote(

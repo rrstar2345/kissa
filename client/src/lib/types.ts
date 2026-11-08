@@ -364,6 +364,50 @@ export interface ExitAllResult {
   orders: OrderRow[];
 }
 
+// ------------------------------------------------------------------ risk ---
+
+export interface RiskLimits {
+  enabled: boolean;
+  /** 0 = no limit */
+  maxLotsPerOrder: number;
+  /** 0 = no limit */
+  maxOpenPositions: number;
+  /** Rupees; 0 = no limit */
+  maxDailyLoss: number;
+  squareOffOnBreach: boolean;
+  windowEnabled: boolean;
+  /** HH:MM, IST */
+  windowStart: string;
+  windowEnd: string;
+}
+
+export interface HaltInfo {
+  kind: 'kill' | 'daily_loss';
+  reason: string;
+  since: string;
+}
+
+export interface AccountRisk {
+  accountId: string;
+  name: string;
+  kind: string;
+  limits: RiskLimits;
+  halt: HaltInfo | null;
+  netToday: number;
+  openPositions: number;
+}
+
+export interface RiskOverview {
+  killSwitch: HaltInfo | null;
+  accounts: AccountRisk[];
+}
+
+export interface KillResult {
+  cancelled: number;
+  placed: number;
+  skipped: string[];
+}
+
 export interface AccountSummary {
   accountId: string;
   name: string;

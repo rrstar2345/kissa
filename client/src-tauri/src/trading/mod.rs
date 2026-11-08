@@ -10,6 +10,8 @@
 //! * `store.rs`, `charges.rs`, `pricing.rs`, `ltp.rs`, `feed.rs`, `scrip.rs`,
 //!   `server.rs`: persistence, costs, tick maths, prices, instrument list and
 //!   the server (broker-proxy) authentication gate.
+//! * `risk.rs`: per-account risk limits, halts and the pure order check
+//!   (applied in `service::place`, so every order path is covered).
 //!
 //! The client is the system of record: the proxy persists nothing, so every
 //! order update and fill is written to SQLite here.
@@ -19,6 +21,7 @@ pub mod charges;
 pub mod feed;
 pub mod ltp;
 pub mod pricing;
+pub mod risk;
 pub mod scrip;
 pub mod server;
 pub mod service;

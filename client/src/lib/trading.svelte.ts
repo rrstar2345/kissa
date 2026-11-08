@@ -7,6 +7,8 @@ class TradingStore {
   version = $state(0);
   lastOrder = $state<OrderRow | null>(null);
   broker = $state<Record<string, BrokerStatus>>({});
+  /** Bumped on every `risk-update` (limits saved, halt raised or lifted, kill switch). */
+  riskVersion = $state(0);
   private unlisten: UnlistenFn[] = [];
   private started = false;
 
@@ -20,6 +22,9 @@ class TradingStore {
       }),
       await listen<BrokerStatus>('broker-status', (e) => {
         this.broker[e.payload.accountId] = e.payload;
+      }),
+      await listen('risk-update', () => {
+        this.riskVersion++;
       })
     );
   }

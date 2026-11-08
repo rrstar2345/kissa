@@ -3,6 +3,7 @@
 //! * `orders`: validation, routing to the right `Broker`, cancel / modify.
 //! * `exit`: Exit position / Exit all.
 //! * `squareoff`: paper INTRADAY auto square-off.
+//! * `risk`: risk checks in `place`, the daily-loss monitor and the kill switch.
 //! * `bracket`: stop-loss / target legs attached to an entry (paper), with OCO.
 //! * `settle`: paper expiry settlement at the contract's last 1m close.
 //! * `views`: dashboard, diary, order / trade lists, quotes.
@@ -14,6 +15,7 @@
 mod bracket;
 mod exit;
 mod orders;
+mod risk;
 mod settle;
 mod squareoff;
 mod views;
@@ -326,7 +328,7 @@ impl TradingService {
 
     // --------------------------------------------------------------- sweeper ---
 
-    /// Every 5 s: paper auto square-off; every minute: settle expired paper
+    /// Every 5 s: paper auto square-off and the daily-loss monitor; every minute: settle expired paper
     /// positions and re-read the order books of accounts with open orders
     /// (catches missed live updates).
     async fn sweeper(self: Arc<Self>) {
@@ -336,6 +338,7 @@ impl TradingService {
             tick.tick().await;
             n += 1;
             self.auto_square_off(n == 1).await;
+            self.enforce_risk().await;
             if n == 1 || n % 12 == 0 {
                 self.settle_expired().await;
             }
