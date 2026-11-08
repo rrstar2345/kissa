@@ -1,6 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Account,
+  AlertConfig,
+  AlertRow,
+  AlertSettings,
   BackfillResult,
   ChartData,
   ContractInfo,
@@ -76,6 +79,16 @@ export const api = {
     invoke<RiskLimits>('save_risk_limits', { accountId, limits }),
   setKillSwitch: (on: boolean, flatten = false) => invoke<KillResult>('set_kill_switch', { on, flatten }),
   resumeAccount: (accountId: string) => invoke<void>('resume_account', { accountId }),
+  getAlertSettings: () => invoke<AlertSettings>('get_alert_settings'),
+  saveAlertSettings: (config: AlertConfig, telegramToken?: string, smtpPassword?: string) =>
+    invoke<AlertSettings>('save_alert_settings', {
+      config,
+      telegramToken: telegramToken || null,
+      smtpPassword: smtpPassword || null
+    }),
+  testAlert: (channel: 'telegram' | 'email') => invoke<TestResult>('test_alert', { channel }),
+  listAlertHistory: (limit = 200) => invoke<AlertRow[]>('list_alert_history', { limit }),
+  clearAlertHistory: () => invoke<void>('clear_alert_history'),
   getQuote: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
     invoke<QuoteView>('get_quote', { symbol, expiry, strike, isCall }),
   getDashboard: (accountId?: string | null) =>

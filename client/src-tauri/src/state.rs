@@ -2,6 +2,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
+use crate::alerts::AlertService;
 use crate::chain::runner::ChainHandle;
 use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
@@ -25,6 +26,7 @@ pub struct AppState {
     /// Latest option prices from whichever stream is running.
     pub ltp: Arc<LtpStore>,
     pub trading: Arc<TradingService>,
+    pub alerts: Arc<AlertService>,
 }
 
 pub type SharedState = Arc<AppState>;

@@ -3,6 +3,7 @@
 //! * `orders`: validation, routing to the right `Broker`, cancel / modify.
 //! * `exit`: Exit position / Exit all.
 //! * `squareoff`: paper INTRADAY auto square-off.
+//! * `alerts`: alert messages (fills, rejections, risk, daily summary, token expiry).
 //! * `risk`: risk checks in `place`, the daily-loss monitor and the kill switch.
 //! * `bracket`: stop-loss / target legs attached to an entry (paper), with OCO.
 //! * `settle`: paper expiry settlement at the contract's last 1m close.
@@ -12,6 +13,7 @@
 //! `apply_state`, which updates the local order, books new fills in the
 //! ledger and emits `order-update`.
 
+mod alerts;
 mod bracket;
 mod exit;
 mod orders;
@@ -38,6 +40,7 @@ use super::server::ServerAuth;
 use super::store::{self, Fill};
 use super::{BrokerStatus, OrderRow};
 use crate::accounts;
+use crate::alerts::AlertService;
 use crate::settings::{AppConfig, ServerConfig};
 
 fn is_terminal(s: &str) -> bool {
@@ -66,6 +69,8 @@ pub struct TradingService {
     /// Server (broker-proxy) connection; every order needs it to authenticate.
     server: std::sync::RwLock<ServerConfig>,
     server_auth: ServerAuth,
+    /// Telegram / email notifications.
+    alerts: Arc<AlertService>,
 }
 
 impl TradingService {
@@ -74,6 +79,7 @@ impl TradingService {
         cfg: AppConfig,
         ltp: Arc<LtpStore>,
         app: AppHandle,
+        alerts: Arc<AlertService>,
     ) -> (Arc<Self>, UnboundedReceiver<BrokerEvent>) {
         let (events_tx, events_rx) = unbounded_channel();
 
@@ -97,6 +103,7 @@ impl TradingService {
             events_tx,
             server,
             server_auth,
+            alerts,
         });
         (svc, events_rx)
     }
@@ -128,6 +135,7 @@ impl TradingService {
     }
 
     fn emit_status(&self, account_id: &str, state: &str, detail: &str) {
+        self.alerts.connection(account_id, state, detail);
         let _ = self.app.emit(
             "broker-status",
             BrokerStatus { account_id: account_id.into(), state: state.into(), detail: detail.into() },
@@ -306,10 +314,12 @@ impl TradingService {
                 )
                 .await?;
             }
+            self.alert_fill(&o, dq, dp, filled).await;
             o.filled_qty = filled;
             o.avg_price = avg;
         }
-        if !is_terminal(&o.status) {
+        let was_terminal = is_terminal(&o.status);
+        if !was_terminal {
             o.status = status;
         }
         if !message.is_empty() {
@@ -320,6 +330,9 @@ impl TradingService {
         store::save_order_state(&self.pool, &o).await?;
         let row = store::get_order(&self.pool, &o.id).await?.unwrap_or(o);
         self.emit_order(&row);
+        if !was_terminal && row.status == "REJECTED" {
+            self.alert_rejected(&row).await;
+        }
         // Bracket follow-ups: place the legs after an entry fills, cancel the
         // other leg after one executes.
         self.after_state(&row).await;
@@ -331,6 +344,8 @@ impl TradingService {
     /// Every 5 s: paper auto square-off and the daily-loss monitor; every minute: settle expired paper
     /// positions and re-read the order books of accounts with open orders
     /// (catches missed live updates).
+    /// The first run and then every minute also check the alert schedule
+    /// (daily summary, token reminders).
     async fn sweeper(self: Arc<Self>) {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut n: u64 = 0;
@@ -341,6 +356,7 @@ impl TradingService {
             self.enforce_risk().await;
             if n == 1 || n % 12 == 0 {
                 self.settle_expired().await;
+                self.alerts_tick().await;
             }
             if n % 12 == 0 {
                 for id in self.open_order_accounts().await {

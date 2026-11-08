@@ -196,6 +196,12 @@ impl TradingService {
             }
         }
         info!("Risk: {} halted; {cancelled} entry order(s) cancelled, {exited} exit order(s) placed", a.name);
+        self.alert_risk(
+            format!("Risk halt: {}", a.name),
+            format!(
+                "{reason}. {cancelled} entry order(s) cancelled, {exited} exit order(s) placed. New positions are blocked until tomorrow."
+            ),
+        );
     }
 
     /// Cancel resting orders that would add exposure (entries). Stop-loss and
@@ -288,6 +294,7 @@ impl TradingService {
             risk::clear_halt(&self.pool, GLOBAL).await?;
             info!("Risk: kill switch released");
             self.emit_risk();
+            self.alert_risk("Kill switch released".into(), "Trading is allowed again.".into());
             return Ok(out);
         }
         let row = HaltRow {
@@ -309,6 +316,14 @@ impl TradingService {
             out.cancelled += r.cancelled;
             out.skipped = r.skipped;
         }
+        self.alert_risk(
+            "Kill switch ON".into(),
+            format!(
+                "No new positions on any account. {} order(s) cancelled{}.",
+                out.cancelled,
+                if flatten { format!(", {} exit order(s) placed", out.placed) } else { String::new() }
+            ),
+        );
         Ok(out)
     }
 

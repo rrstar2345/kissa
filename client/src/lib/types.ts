@@ -460,3 +460,59 @@ export interface ServerSettings {
   port: number;
   apiKeySet: boolean;
 }
+
+// ---------------------------------------------------------------- alerts ---
+
+export interface TelegramConfig {
+  enabled: boolean;
+  /** Numeric chat ids or @channelname */
+  chatIds: string[];
+}
+
+export interface EmailConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  security: 'starttls' | 'tls' | 'none';
+  /** Blank = no authentication */
+  username: string;
+  from: string;
+  to: string[];
+}
+
+export interface AlertConfig {
+  telegram: TelegramConfig;
+  email: EmailConfig;
+  /** event kind -> on/off; a missing kind is on */
+  events: Record<string, boolean>;
+  dedupeSecs: number;
+  /** HH:MM, IST */
+  summaryTime: string;
+  tokenWarnHours: number;
+  fyersTokenHours: number;
+  dhanTokenHours: number;
+}
+
+export interface AlertEventInfo {
+  kind: string;
+  label: string;
+  description: string;
+}
+
+export interface AlertSettings {
+  config: AlertConfig;
+  events: AlertEventInfo[];
+  telegramTokenSet: boolean;
+  smtpPasswordSet: boolean;
+}
+
+export interface AlertRow {
+  id: number;
+  at: string;
+  kind: string;
+  title: string;
+  body: string;
+  status: 'sending' | 'sent' | 'partial' | 'failed' | 'suppressed' | 'skipped';
+  detail: string;
+  attempts: number;
+}

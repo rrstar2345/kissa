@@ -1,4 +1,5 @@
 mod accounts;
+mod alerts;
 mod chain;
 mod charts;
 mod commands;
@@ -37,8 +38,14 @@ pub fn run() {
 
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
             let (ltp, ltp_rx) = trading::ltp::LtpStore::new();
-            let (trading_svc, broker_rx) =
-                trading::service::TradingService::new(pool.clone(), config.clone(), ltp.clone(), app.handle().clone());
+            let alerts = tauri::async_runtime::block_on(alerts::AlertService::new(pool.clone(), app.handle().clone()));
+            let (trading_svc, broker_rx) = trading::service::TradingService::new(
+                pool.clone(),
+                config.clone(),
+                ltp.clone(),
+                app.handle().clone(),
+                alerts.clone(),
+            );
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
                 paths: paths.clone(),
@@ -51,6 +58,7 @@ pub fn run() {
                 recorder: charts::recorder::Recorder::new(pool.clone()),
                 ltp,
                 trading: trading_svc.clone(),
+                alerts,
             });
             app.manage(state.clone());
 
@@ -152,6 +160,11 @@ pub fn run() {
             commands::save_risk_limits,
             commands::set_kill_switch,
             commands::resume_account,
+            commands::get_alert_settings,
+            commands::save_alert_settings,
+            commands::test_alert,
+            commands::list_alert_history,
+            commands::clear_alert_history,
             commands::get_quote,
             commands::contract_info,
             commands::refresh_instruments,

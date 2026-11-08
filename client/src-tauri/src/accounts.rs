@@ -156,6 +156,10 @@ pub async fn save(pool: &SqlitePool, mut input: SaveAccountInput) -> Result<Acco
             continue;
         }
         secrets::set(&id, field, value.trim())?;
+        if field == "accessToken" {
+            // Remembered for the token-expiry reminders (see `alerts`).
+            crate::db::set_setting(pool, &format!("{TOKEN_SAVED_PREFIX}{id}"), &now).await?;
+        }
         if !set_fields.contains(field) {
             set_fields.push(field.clone());
         }
@@ -193,7 +197,23 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
         secrets::delete(id, f)?;
     }
     sqlx::query("DELETE FROM accounts WHERE id = ?").bind(id).execute(pool).await?;
+    sqlx::query("DELETE FROM app_settings WHERE key IN (?, ?)")
+        .bind(format!("{TOKEN_SAVED_PREFIX}{id}"))
+        .bind(format!("{TOKEN_NOTIFIED_PREFIX}{id}"))
+        .execute(pool)
+        .await?;
     Ok(())
+}
+
+/// `app_settings` key prefixes: when an account's access token was last saved
+/// here, and which expiry reminder was last sent for it.
+pub const TOKEN_SAVED_PREFIX: &str = "token_saved:";
+pub const TOKEN_NOTIFIED_PREFIX: &str = "token_notified:";
+
+/// When the account's access token was last saved in this app, if ever.
+pub async fn token_saved_at(pool: &SqlitePool, id: &str) -> Option<chrono::DateTime<Utc>> {
+    let text = crate::db::get_setting(pool, &format!("{TOKEN_SAVED_PREFIX}{id}")).await.ok().flatten()?;
+    chrono::DateTime::parse_from_rfc3339(&text).ok().map(|d| d.with_timezone(&Utc))
 }
 
 pub async fn fyers_creds(pool: &SqlitePool, id: &str) -> Result<FyersCreds> {

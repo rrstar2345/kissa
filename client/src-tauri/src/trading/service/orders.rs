@@ -234,6 +234,7 @@ impl TradingService {
                 store::save_order_state(&self.pool, &order).await?;
                 order = store::get_order(&self.pool, &order.id).await?.unwrap_or(order);
                 self.emit_order(&order);
+                self.alert_rejected(&order).await;
                 Ok(order)
             }
         }

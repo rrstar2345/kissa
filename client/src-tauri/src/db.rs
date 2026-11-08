@@ -43,6 +43,7 @@ pub async fn init_pool(db_file: &Path) -> Result<SqlitePool> {
     crate::trading::scrip::init(&pool).await?;
     crate::trading::store::init(&pool).await?;
     crate::trading::risk::init(&pool).await?;
+    crate::alerts::store::init(&pool).await?;
     Ok(pool)
 }
 

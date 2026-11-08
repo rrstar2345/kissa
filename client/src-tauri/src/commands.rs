@@ -2,6 +2,7 @@ use chrono::{NaiveDate, Timelike};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use crate::alerts::{config::AlertConfig, store::AlertRow, AlertSettings};
 use crate::accounts::{self, Account, SaveAccountInput, TestResult};
 use crate::chain::runner;
 use crate::charts::rules::{self, eval as rule_eval, Ruleset};
@@ -389,6 +390,45 @@ pub async fn set_kill_switch(on: bool, flatten: bool, state: State<'_, SharedSta
 #[tauri::command]
 pub async fn resume_account(account_id: String, state: State<'_, SharedState>) -> Res<()> {
     state.trading.resume_account(&account_id).await.map_err(err)
+}
+
+// ---------------------------------------------------------------- alerts ---
+
+/// Alert channels, event toggles and options. Secret values are never returned,
+/// only whether they are set.
+#[tauri::command]
+pub async fn get_alert_settings(state: State<'_, SharedState>) -> Res<AlertSettings> {
+    Ok(state.alerts.settings().await)
+}
+
+/// Validate and save. A blank token / password keeps the stored one.
+#[tauri::command]
+pub async fn save_alert_settings(
+    config: AlertConfig,
+    telegram_token: Option<String>,
+    smtp_password: Option<String>,
+    state: State<'_, SharedState>,
+) -> Res<AlertSettings> {
+    state.alerts.save_settings(config, telegram_token, smtp_password).await.map_err(err)
+}
+
+/// Send a test message (`telegram` | `email`) using the saved settings.
+#[tauri::command]
+pub async fn test_alert(channel: String, state: State<'_, SharedState>) -> Res<TestResult> {
+    Ok(match state.alerts.send_test(&channel).await {
+        Ok(message) => TestResult { ok: true, message },
+        Err(e) => TestResult { ok: false, message: e.to_string() },
+    })
+}
+
+#[tauri::command]
+pub async fn list_alert_history(limit: Option<i64>, state: State<'_, SharedState>) -> Res<Vec<AlertRow>> {
+    state.alerts.history(limit.unwrap_or(200)).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn clear_alert_history(state: State<'_, SharedState>) -> Res<()> {
+    state.alerts.clear_history().await.map_err(err)
 }
 
 /// Latest price of a contract, for the order ticket.

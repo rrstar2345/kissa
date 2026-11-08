@@ -9,6 +9,8 @@ class TradingStore {
   broker = $state<Record<string, BrokerStatus>>({});
   /** Bumped on every `risk-update` (limits saved, halt raised or lifted, kill switch). */
   riskVersion = $state(0);
+  /** Bumped on every `alert-update` (alert queued, delivered or failed; history cleared). */
+  alertVersion = $state(0);
   private unlisten: UnlistenFn[] = [];
   private started = false;
 
@@ -25,6 +27,9 @@ class TradingStore {
       }),
       await listen('risk-update', () => {
         this.riskVersion++;
+      }),
+      await listen('alert-update', () => {
+        this.alertVersion++;
       })
     );
   }
