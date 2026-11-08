@@ -4,6 +4,7 @@ use tauri::{AppHandle, State};
 
 use crate::accounts::{self, Account, SaveAccountInput, TestResult};
 use crate::chain::runner;
+use crate::charts::rules::{self, eval as rule_eval, Ruleset};
 use crate::charts::{backfill, indicators, resample, store, BackfillResult, ChartRequest, ChartResponse, InstrumentList};
 use crate::chain::{fyers, ExpiryItem};
 use crate::db;
@@ -191,8 +192,61 @@ pub async fn get_chart(req: ChartRequest, state: State<'_, SharedState>) -> Res<
     let bars = store::chart_bars(&state.db, &req.instrument, interval, req.limit.unwrap_or(1500))
         .await
         .map_err(err)?;
-    let out = indicators::compute(&bars, &req.indicators);
-    Ok(ChartResponse { bars, lines: out.lines, signals: out.signals })
+    let mut out = indicators::compute(&bars, &req.indicators);
+
+    // Rulesets: saved ones by id plus an optional unsaved draft. Only closed
+    // candles can signal, so the forming one is left out of evaluation.
+    let mut warnings = Vec::new();
+    let mut sets: Vec<Ruleset> = Vec::new();
+    if !req.rulesets.is_empty() {
+        let all = rules::store::list(&state.db).await.map_err(err)?;
+        sets.extend(all.into_iter().filter(|r| req.rulesets.contains(&r.id)));
+    }
+    if let Some(d) = req.draft.clone() {
+        sets.push(d);
+    }
+    if !sets.is_empty() {
+        let step = match interval {
+            resample::Interval::Min(n) => n * 60,
+            resample::Interval::Day => 86_400,
+        };
+        let now = chrono::Utc::now().timestamp();
+        let closed = match bars.last() {
+            Some(b) if b.ts + step > now => bars.len() - 1,
+            _ => bars.len(),
+        };
+        for rs in &sets {
+            match rule_eval::evaluate(rs, &bars, closed) {
+                Ok(o) => {
+                    out.lines.extend(o.lines);
+                    out.signals.extend(o.signals);
+                }
+                Err(e) => warnings.push(format!("{}: {e}", rs.name)),
+            }
+        }
+        out.signals.sort_by_key(|s| s.time);
+    }
+    Ok(ChartResponse { bars, lines: out.lines, signals: out.signals, warnings })
+}
+
+#[tauri::command]
+pub async fn list_rulesets(state: State<'_, SharedState>) -> Res<Vec<Ruleset>> {
+    rules::store::list(&state.db).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn save_ruleset(ruleset: Ruleset, state: State<'_, SharedState>) -> Res<Ruleset> {
+    rules::store::save(&state.db, ruleset).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn delete_ruleset(id: String, state: State<'_, SharedState>) -> Res<()> {
+    rules::store::delete(&state.db, &id).await.map_err(err)
+}
+
+#[tauri::command]
+pub fn validate_ruleset(ruleset: Ruleset) -> Vec<String> {
+    ruleset.validate()
 }
 
 #[tauri::command]

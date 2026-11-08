@@ -6,6 +6,7 @@ pub mod indicators;
 pub mod instrument;
 pub mod recorder;
 pub mod resample;
+pub mod rules;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,12 @@ pub struct ChartRequest {
     pub limit: Option<usize>,
     #[serde(default)]
     pub indicators: Vec<indicators::IndicatorSpec>,
+    /// Saved rulesets (by id) whose signals and plotted variables to add.
+    #[serde(default)]
+    pub rulesets: Vec<String>,
+    /// An unsaved ruleset to preview (the Signals editor).
+    #[serde(default)]
+    pub draft: Option<rules::Ruleset>,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,6 +53,8 @@ pub struct ChartResponse {
     pub bars: Vec<Bar>,
     pub lines: Vec<indicators::Line>,
     pub signals: Vec<indicators::Signal>,
+    /// Problems with a selected/draft ruleset (it is skipped).
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

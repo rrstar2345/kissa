@@ -26,19 +26,25 @@
     presetLabel,
     resolveColor
   } from '$lib/charts';
-  import type { BarEvent, ChartData, IndicatorLine, InstrumentList, PanelConfig } from '$lib/types';
+  import type { BarEvent, ChartData, IndicatorLine, InstrumentList, PanelConfig, Ruleset } from '$lib/types';
   import InstrumentPicker from './InstrumentPicker.svelte';
 
   let {
     config,
     list,
+    rulesets = [],
+    draft = null,
     onchange,
     onremove
   }: {
     config: PanelConfig;
     list: InstrumentList;
+    /** Saved rulesets offered in the Signals dropdown. */
+    rulesets?: Ruleset[];
+    /** Unsaved ruleset previewed on top (Signals editor). */
+    draft?: Ruleset | null;
     onchange: (c: PanelConfig) => void;
-    onremove: () => void;
+    onremove?: () => void;
   } = $props();
 
   let host: HTMLDivElement;
@@ -140,6 +146,8 @@
     config.instrument;
     config.interval;
     JSON.stringify(config.indicators);
+    JSON.stringify(config.rulesets ?? []);
+    JSON.stringify(draft);
     config.volume;
     if (chart) schedule(0);
   });
@@ -188,13 +196,13 @@
     const mine = ++seq;
     let data: ChartData;
     try {
-      data = await api.getChart(config.instrument, config.interval, config.indicators);
+      data = await api.getChart(config.instrument, config.interval, config.indicators, config.rulesets ?? [], draft);
     } catch (e) {
       status = String(e);
       return;
     }
     if (mine !== seq || !chart || !candles) return; // superseded
-    status = '';
+    status = data.warnings?.length ? data.warnings.join(' | ') : '';
     barCount = data.bars.length;
     candles.setData(
       data.bars.map((b) => ({ time: t(b.ts), open: b.open, high: b.high, low: b.low, close: b.close }))
@@ -305,6 +313,12 @@
     });
   }
 
+  const ruleOn = (id: string) => (config.rulesets ?? []).includes(id);
+  function toggleRuleset(id: string) {
+    const cur = config.rulesets ?? [];
+    update({ rulesets: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] });
+  }
+
   async function backfill() {
     if (!config.instrument) return;
     busy = true;
@@ -349,6 +363,23 @@
     </div>
 
     <div class="dropdown">
+      <div tabindex="0" role="button" class="btn btn-xs">Signals ({(config.rulesets ?? []).filter((id) => rulesets.some((r) => r.id === id)).length})</div>
+      <ul class="dropdown-content menu z-20 w-56 rounded-box border border-base-300 bg-base-100 p-2 shadow">
+        {#each rulesets as r (r.id)}
+          <li>
+            <label class="flex cursor-pointer gap-2">
+              <input type="checkbox" class="checkbox checkbox-xs" checked={ruleOn(r.id)} onchange={() => toggleRuleset(r.id)} />
+              <span class="truncate">{r.name}</span>
+            </label>
+          </li>
+        {:else}
+          <li class="px-2 py-1 text-xs text-base-content/60">No rulesets yet.</li>
+        {/each}
+        <li><a href="/signals" class="text-xs">Edit rulesets…</a></li>
+      </ul>
+    </div>
+
+    <div class="dropdown">
       <div tabindex="0" role="button" class="btn btn-xs">Backfill</div>
       <div class="dropdown-content z-20 w-56 space-y-2 rounded-box border border-base-300 bg-base-100 p-3 shadow">
         <p class="text-xs text-base-content/70">
@@ -365,7 +396,9 @@
     </div>
 
     <span class="ml-auto truncate text-xs text-base-content/60">{instrumentLabel(config.instrument)}{barCount ? ` · ${barCount} bars` : ''}</span>
-    <button class="btn btn-ghost btn-xs" title="Remove panel" onclick={onremove}>✕</button>
+    {#if onremove}
+      <button class="btn btn-ghost btn-xs" title="Remove panel" onclick={onremove}>✕</button>
+    {/if}
   </div>
   <div class="relative min-h-0 flex-1">
     <div bind:this={host} class="absolute inset-0"></div>

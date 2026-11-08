@@ -60,7 +60,7 @@ pub struct IndicatorOutput {
     pub signals: Vec<Signal>,
 }
 
-type Series = Vec<Option<f64>>;
+pub type Series = Vec<Option<f64>>;
 
 // ------------------------------------------------------------ primitives ---
 
@@ -185,6 +185,31 @@ pub fn vwap(bars: &[Bar]) -> Series {
     out
 }
 
+/// Wilder ATR; first value at index `n`.
+pub fn atr(bars: &[Bar], n: usize) -> Series {
+    let len = bars.len();
+    let mut out = vec![None; len];
+    if n == 0 || len <= n {
+        return out;
+    }
+    let tr = |i: usize| {
+        let hl = bars[i].high - bars[i].low;
+        if i == 0 {
+            hl
+        } else {
+            let pc = bars[i - 1].close;
+            hl.max((bars[i].high - pc).abs()).max((bars[i].low - pc).abs())
+        }
+    };
+    let mut v = (1..=n).map(|i| tr(i)).sum::<f64>() / n as f64;
+    out[n] = Some(v);
+    for i in n + 1..len {
+        v = (v * (n as f64 - 1.0) + tr(i)) / n as f64;
+        out[i] = Some(v);
+    }
+    out
+}
+
 pub struct Supertrend {
     pub up: Series,
     pub down: Series,
@@ -243,7 +268,7 @@ pub fn supertrend(bars: &[Bar], n: usize, mult: f64) -> Supertrend {
 }
 
 /// Indices where `a` crosses `b`; `true` = upward cross.
-fn crosses(a: &Series, b: &Series) -> Vec<(usize, bool)> {
+pub(crate) fn crosses(a: &Series, b: &Series) -> Vec<(usize, bool)> {
     let mut out = Vec::new();
     for i in 1..a.len().min(b.len()) {
         if let (Some(a0), Some(b0), Some(a1), Some(b1)) = (a[i - 1], b[i - 1], a[i], b[i]) {

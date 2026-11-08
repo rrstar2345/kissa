@@ -149,6 +149,8 @@ export interface ChartData {
   bars: Bar[];
   lines: IndicatorLine[];
   signals: ChartSignal[];
+  /** Problems with a selected/draft ruleset (it was skipped). */
+  warnings?: string[];
 }
 
 export interface OptionExpiryInfo {
@@ -177,12 +179,59 @@ export interface PanelConfig {
   instrument: string | null;
   interval: string;
   indicators: IndicatorSpec[];
+  /** Ids of saved signal rulesets applied to this chart. */
+  rulesets?: string[];
   volume: boolean;
 }
 
 export interface ChartsLayout {
   cols: 1 | 2 | 3;
   panels: PanelConfig[];
+}
+
+// --------------------------------------------------------------- signals ---
+
+export type VarKind = 'sma' | 'ema' | 'rsi' | 'macd' | 'bb' | 'atr' | 'vwap' | 'supertrend' | 'formula';
+export type CmpOp = 'crosses_above' | 'crosses_below' | '>' | '>=' | '<' | '<=' | '=' | '<>';
+
+export interface RuleVar {
+  id: string;
+  kind: VarKind;
+  length?: number;
+  /** Price source or the id of an earlier variable. */
+  src?: string;
+  fast?: number;
+  slow?: number;
+  signal?: number;
+  mult?: number;
+  output?: string;
+  left?: string;
+  op?: string;
+  right?: string;
+  plot: boolean;
+}
+
+export interface RuleCond {
+  type: 'cond';
+  left: string;
+  op: CmpOp;
+  right: string;
+}
+
+export interface RuleGroup {
+  type: 'group';
+  op: 'and' | 'or';
+  items: RuleNode[];
+}
+
+export type RuleNode = RuleCond | RuleGroup;
+
+export interface Ruleset {
+  id: string;
+  name: string;
+  vars: RuleVar[];
+  entry: { op: 'and' | 'or'; items: RuleNode[] };
+  exit: { op: 'and' | 'or'; items: RuleNode[] };
 }
 
 // --------------------------------------------------------------- trading ---

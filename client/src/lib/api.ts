@@ -15,6 +15,7 @@ import type {
   OrderRow,
   PlaceOrderInput,
   QuoteView,
+  Ruleset,
   SaveAccountInput,
   ServerSettings,
   Source,
@@ -32,8 +33,18 @@ export const api = {
     invoke<void>('start_chain', { source, symbol, expiry }),
   stopChain: () => invoke<void>('stop_chain'),
 
-  getChart: (instrument: string, interval: string, indicators: IndicatorSpec[], limit = 1500) =>
-    invoke<ChartData>('get_chart', { req: { instrument, interval, indicators, limit } }),
+  getChart: (
+    instrument: string,
+    interval: string,
+    indicators: IndicatorSpec[],
+    rulesets: string[] = [],
+    draft: Ruleset | null = null,
+    limit = 1500
+  ) => invoke<ChartData>('get_chart', { req: { instrument, interval, indicators, rulesets, draft, limit } }),
+  listRulesets: () => invoke<Ruleset[]>('list_rulesets'),
+  saveRuleset: (ruleset: Ruleset) => invoke<Ruleset>('save_ruleset', { ruleset }),
+  deleteRuleset: (id: string) => invoke<void>('delete_ruleset', { id }),
+  validateRuleset: (ruleset: Ruleset) => invoke<string[]>('validate_ruleset', { ruleset }),
   listChartInstruments: () => invoke<InstrumentList>('list_chart_instruments'),
   backfillChart: (instrument: string, interval: '1m' | '1d', days: number) =>
     invoke<BackfillResult>('backfill_chart', { instrument, interval, days }),

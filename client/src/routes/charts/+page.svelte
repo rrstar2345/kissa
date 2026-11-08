@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, getJson, setJson } from '$lib/api';
   import { INDICATOR_PRESETS, indexKey } from '$lib/charts';
-  import type { ChartsLayout, InstrumentList, PanelConfig } from '$lib/types';
+  import type { ChartsLayout, InstrumentList, PanelConfig, Ruleset } from '$lib/types';
   import ChartPanel from '$lib/components/ChartPanel.svelte';
 
   const LAYOUT_KEY = 'charts.layout';
@@ -17,6 +17,7 @@
 
   let layout = $state<ChartsLayout>({ cols: 1, panels: [] });
   let list = $state<InstrumentList>({ indices: [], options: [] });
+  let rulesets = $state<Ruleset[]>([]);
   let ready = $state(false);
 
   onMount(() => {
@@ -32,6 +33,7 @@
 
   async function refreshList() {
     list = await api.listChartInstruments().catch(() => list);
+    rulesets = await api.listRulesets().catch(() => rulesets);
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -80,7 +82,7 @@
       style="grid-template-columns: repeat({layout.cols}, minmax(0, 1fr)); grid-auto-rows: minmax(420px, 1fr);"
     >
       {#each layout.panels as p, i (p.id)}
-        <ChartPanel config={p} {list} onchange={(c) => updatePanel(i, c)} onremove={() => removePanel(i)} />
+        <ChartPanel config={p} {list} {rulesets} onchange={(c) => updatePanel(i, c)} onremove={() => removePanel(i)} />
       {/each}
     </div>
   {/if}
