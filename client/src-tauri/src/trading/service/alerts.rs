@@ -27,7 +27,7 @@ fn rupees(v: f64) -> String {
 }
 
 impl TradingService {
-    async fn account_name(&self, account_id: &str) -> String {
+    pub(super) async fn account_name(&self, account_id: &str) -> String {
         accounts::get(&self.pool, account_id).await.map(|a| a.name).unwrap_or_else(|_| account_id.to_string())
     }
 

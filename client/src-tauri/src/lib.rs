@@ -160,6 +160,8 @@ pub fn run() {
             commands::save_risk_limits,
             commands::set_kill_switch,
             commands::resume_account,
+            commands::get_copier,
+            commands::save_copier,
             commands::get_alert_settings,
             commands::save_alert_settings,
             commands::test_alert,

@@ -11,6 +11,8 @@ class TradingStore {
   riskVersion = $state(0);
   /** Bumped on every `alert-update` (alert queued, delivered or failed; history cleared). */
   alertVersion = $state(0);
+  /** Bumped on every `copier-update` (settings saved, copy placed, followed or failed). */
+  copierVersion = $state(0);
   private unlisten: UnlistenFn[] = [];
   private started = false;
 
@@ -30,6 +32,9 @@ class TradingStore {
       }),
       await listen('alert-update', () => {
         this.alertVersion++;
+      }),
+      await listen('copier-update', () => {
+        this.copierVersion++;
       })
     );
   }

@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 
 use super::TradingService;
 use crate::trading::pricing::exit_price;
-use crate::trading::{store, ExitAllResult, OrderRow, PlaceOrderInput, Position};
+use crate::trading::{store, today_ist, ExitAllResult, OrderRow, PlaceOrderInput, Position};
 
 fn contract_label(p: &Position) -> String {
     format!("{} {} {} {}", p.symbol, p.expiry, p.strike, if p.is_call { "CE" } else { "PE" })
@@ -19,6 +19,17 @@ impl TradingService {
     /// Close one position. Returns the exit order and how many open orders
     /// were cancelled first.
     async fn exit_one(&self, p: &Position) -> Result<(OrderRow, usize)> {
+        // Let in-flight trade-copier copies finish, then act on the position as
+        // it is now: Exit all on the master and its copies must not exit twice.
+        drop(self.copier_lock.lock().await);
+        let now = store::open_positions(&self.pool, Some(&p.account_id), &today_ist())
+            .await?
+            .into_iter()
+            .find(|x| x.instrument == p.instrument && x.product == p.product)
+            .ok_or_else(|| anyhow!("position already closed"))?;
+        let mut p = p.clone();
+        p.net_qty = now.net_qty;
+        let p = &p;
         let ltp = p.ltp.filter(|l| l.is_finite() && *l > 0.0).ok_or_else(|| anyhow!("no price available yet"))?;
         if p.lot_size <= 0 || p.net_qty == 0 || p.net_qty.abs() % p.lot_size != 0 {
             return Err(anyhow!("quantity is not a whole number of lots"));

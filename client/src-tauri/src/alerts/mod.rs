@@ -43,14 +43,23 @@ pub enum Kind {
     Connection,
     TokenExpiry,
     DailySummary,
+    /// A trade-copier copy failed or could not follow its master order.
+    Copier,
     /// The Test button. Not a user-selectable event.
     Test,
 }
 
 impl Kind {
     /// The events the user can switch on and off.
-    pub const EVENTS: [Kind; 6] =
-        [Kind::Fill, Kind::Rejection, Kind::Risk, Kind::Connection, Kind::TokenExpiry, Kind::DailySummary];
+    pub const EVENTS: [Kind; 7] = [
+        Kind::Fill,
+        Kind::Rejection,
+        Kind::Risk,
+        Kind::Connection,
+        Kind::TokenExpiry,
+        Kind::DailySummary,
+        Kind::Copier,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -60,6 +69,7 @@ impl Kind {
             Kind::Connection => "connection",
             Kind::TokenExpiry => "token_expiry",
             Kind::DailySummary => "daily_summary",
+            Kind::Copier => "copier",
             Kind::Test => "test",
         }
     }
@@ -72,6 +82,7 @@ impl Kind {
             Kind::Connection => "Connection loss",
             Kind::TokenExpiry => "Token expiry",
             Kind::DailySummary => "Daily P&L summary",
+            Kind::Copier => "Trade copier",
             Kind::Test => "Test",
         }
     }
@@ -84,6 +95,7 @@ impl Kind {
             Kind::Connection => "A broker connection or price feed went down, and when it came back.",
             Kind::TokenExpiry => "A saved Fyers or Dhan access token is about to expire, or probably has.",
             Kind::DailySummary => "Net P&L of every account after the close, on days with activity.",
+            Kind::Copier => "A copy to a child account failed (blocked, rejected, no account) or could not follow a cancel / modify of the master order.",
             Kind::Test => "",
         }
     }

@@ -408,6 +408,64 @@ export interface KillResult {
   skipped: string[];
 }
 
+// ---------------------------------------------------------------- copier ---
+
+export type Rounding = 'down' | 'nearest' | 'up';
+
+export interface CopierChild {
+  accountId: string;
+  enabled: boolean;
+  /** Child lots = master lots x multiplier, then rounded. */
+  multiplier: number;
+  rounding: Rounding;
+  /** A result below 1 lot becomes 1 lot instead of being skipped. */
+  minOneLot: boolean;
+}
+
+export interface CopierConfig {
+  enabled: boolean;
+  masterAccountId: string;
+  children: CopierChild[];
+}
+
+export interface CopierAccount {
+  id: string;
+  name: string;
+  kind: string;
+}
+
+export interface CopyView {
+  id: string;
+  masterOrderId: string;
+  childAccountId: string;
+  childAccountName: string;
+  childOrderId: string | null;
+  masterLots: number;
+  childLots: number;
+  /** placed | skipped | failed */
+  status: 'placed' | 'skipped' | 'failed';
+  message: string;
+  createdAt: string;
+  tradeDate: string;
+  symbol: string | null;
+  expiry: string | null;
+  strike: number | null;
+  isCall: boolean | null;
+  side: Side | null;
+  product: Product | null;
+  price: number | null;
+  /** Current status of the child order, when one exists. */
+  childStatus: string | null;
+  childFilledQty: number | null;
+  childQty: number | null;
+}
+
+export interface CopierOverview {
+  config: CopierConfig;
+  accounts: CopierAccount[];
+  links: CopyView[];
+}
+
 export interface AccountSummary {
   accountId: string;
   name: string;

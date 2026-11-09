@@ -92,6 +92,8 @@ impl TradingService {
     /// because placing a leg goes back through `apply_state`.
     pub(super) fn after_state<'a>(&'a self, o: &'a OrderRow) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
+            // Trade copier: master orders drag their copies along.
+            self.copier_follow(o);
             match o.role.as_str() {
                 ROLE_ENTRY if !o.bracket.is_empty() => self.entry_ended_or_filled(o).await,
                 ROLE_TARGET | ROLE_STOP => self.leg_changed(o).await,

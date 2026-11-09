@@ -10,6 +10,8 @@
 //! * `store.rs`, `charges.rs`, `pricing.rs`, `ltp.rs`, `feed.rs`, `scrip.rs`,
 //!   `server.rs`: persistence, costs, tick maths, prices, instrument list and
 //!   the server (broker-proxy) authentication gate.
+//! * `copier.rs`: trade copier settings, lot scaling and the master -> child
+//!   link table (wired into `service::place` by `service::copier`).
 //! * `risk.rs`: per-account risk limits, halts and the pure order check
 //!   (applied in `service::place`, so every order path is covered).
 //!
@@ -18,6 +20,7 @@
 
 pub mod broker;
 pub mod charges;
+pub mod copier;
 pub mod feed;
 pub mod ltp;
 pub mod pricing;

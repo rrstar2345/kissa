@@ -135,7 +135,28 @@ impl TradingService {
 
     // ---------------------------------------------------------------- place ---
 
+    /// Place an order. On the master account of an enabled trade copier, the
+    /// order is also replicated to the children (in the background).
     pub async fn place(&self, input: PlaceOrderInput) -> Result<OrderRow> {
+        let job = self.copy_job(&input).await;
+        // The copier lock is held from here until the copies are placed, so
+        // anything that reads child positions meanwhile (Exit all) waits.
+        let guard = match job {
+            Some(_) => Some(self.copier_lock.clone().lock_owned().await),
+            None => None,
+        };
+        let order = self.place_inner(input).await?;
+        if let (Some(job), Some(guard)) = (job, guard) {
+            if order.status != "REJECTED" {
+                self.spawn_copy(job, order.clone(), guard);
+            }
+        }
+        Ok(order)
+    }
+
+    /// The order flow itself, without copying. The copier places child
+    /// orders through this, so a copy is never copied again.
+    pub(super) async fn place_inner(&self, input: PlaceOrderInput) -> Result<OrderRow> {
         let c = validate(&input)?;
         if input.expiry.as_str() < today_ist().as_str() {
             return Err(anyhow!("This contract has expired"));

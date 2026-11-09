@@ -17,6 +17,7 @@
     { href: '/charts', label: 'Charts', icon: 'M3 3v18h18M7 14l4-4 3 3 5-6' },
     { href: '/signals', label: 'Signals', icon: 'M3 12h4l3-8 4 16 3-8h4' },
     { href: '/orders', label: 'Orders', icon: 'M9 5h10M9 12h10M9 19h10M4 5h.01M4 12h.01M4 19h.01' },
+    { href: '/copier', label: 'Copier', icon: 'M8 8h12v12H8zM4 16V4h12' },
     { href: '/risk', label: 'Risk', icon: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM12 8v5M12 16h.01' },
     { href: '/alerts', label: 'Alerts', icon: 'M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9zM13.7 21a2 2 0 01-3.4 0' },
     { href: '/accounts', label: 'Accounts', icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM4 21a8 8 0 0116 0' },

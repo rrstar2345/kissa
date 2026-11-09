@@ -392,6 +392,21 @@ pub async fn resume_account(account_id: String, state: State<'_, SharedState>) -
     state.trading.resume_account(&account_id).await.map_err(err)
 }
 
+// ---------------------------------------------------------------- copier ---
+
+use crate::trading::copier::{CopierConfig, CopierOverview};
+
+/// Copier settings, the accounts that can take part and recent copies.
+#[tauri::command]
+pub async fn get_copier(state: State<'_, SharedState>) -> Res<CopierOverview> {
+    state.trading.copier_overview().await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn save_copier(config: CopierConfig, state: State<'_, SharedState>) -> Res<CopierConfig> {
+    state.trading.save_copier_config(config).await.map_err(err)
+}
+
 // ---------------------------------------------------------------- alerts ---
 
 /// Alert channels, event toggles and options. Secret values are never returned,

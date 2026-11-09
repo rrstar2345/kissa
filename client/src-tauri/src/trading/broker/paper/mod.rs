@@ -230,7 +230,8 @@ impl PaperBroker {
         let pos = position_qty.get(&(o.instrument.clone(), o.product.clone())).copied().unwrap_or(0);
         let needed = funds::requirement(o.side == "BUY", o.qty, o.price, o.strike, pos, pct);
         let available = cash - blocked - reserved;
-        if needed > available + 1e-6 {
+        // An order that only closes exposure needs nothing, however over-committed the account is.
+        if needed > 0.0 && needed > available + 1e-6 {
             return Err(anyhow!(
                 "Insufficient funds: this order needs ₹{needed:.0} but ₹{:.0} is available (capital ₹{cash:.0}, \
                  blocked in positions ₹{blocked:.0}, reserved by open orders ₹{reserved:.0}).",

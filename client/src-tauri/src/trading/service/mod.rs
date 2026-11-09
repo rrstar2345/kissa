@@ -3,6 +3,7 @@
 //! * `orders`: validation, routing to the right `Broker`, cancel / modify.
 //! * `exit`: Exit position / Exit all.
 //! * `squareoff`: paper INTRADAY auto square-off.
+//! * `copier`: trade copier (replicate master orders, follow their cancel / modify).
 //! * `alerts`: alert messages (fills, rejections, risk, daily summary, token expiry).
 //! * `risk`: risk checks in `place`, the daily-loss monitor and the kill switch.
 //! * `bracket`: stop-loss / target legs attached to an entry (paper), with OCO.
@@ -15,6 +16,7 @@
 
 mod alerts;
 mod bracket;
+mod copier;
 mod exit;
 mod orders;
 mod risk;
@@ -25,7 +27,7 @@ mod views;
 use anyhow::{anyhow, Result};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -71,6 +73,10 @@ pub struct TradingService {
     server_auth: ServerAuth,
     /// Telegram / email notifications.
     alerts: Arc<AlertService>,
+    /// Handle to itself, for background tasks started from `&self`.
+    me: Weak<TradingService>,
+    /// Serialises trade-copier work: copies, then the follow-ups that refer to them.
+    copier_lock: Arc<Mutex<()>>,
 }
 
 impl TradingService {
@@ -92,7 +98,7 @@ impl TradingService {
 
         let server = std::sync::RwLock::new(cfg.server.clone());
         let server_auth = ServerAuth::new(cfg.trading.request_timeout_secs);
-        let svc = Arc::new(Self {
+        let svc = Arc::new_cyclic(|me| Self {
             pool,
             cfg,
             ltp,
@@ -104,6 +110,8 @@ impl TradingService {
             server,
             server_auth,
             alerts,
+            me: me.clone(),
+            copier_lock: Arc::new(Mutex::new(())),
         });
         (svc, events_rx)
     }

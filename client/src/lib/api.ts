@@ -19,6 +19,8 @@ import type {
   OrderRow,
   PlaceOrderInput,
   QuoteView,
+  CopierConfig,
+  CopierOverview,
   RiskLimits,
   RiskOverview,
   Ruleset,
@@ -79,6 +81,8 @@ export const api = {
     invoke<RiskLimits>('save_risk_limits', { accountId, limits }),
   setKillSwitch: (on: boolean, flatten = false) => invoke<KillResult>('set_kill_switch', { on, flatten }),
   resumeAccount: (accountId: string) => invoke<void>('resume_account', { accountId }),
+  getCopier: () => invoke<CopierOverview>('get_copier'),
+  saveCopier: (config: CopierConfig) => invoke<CopierConfig>('save_copier', { config }),
   getAlertSettings: () => invoke<AlertSettings>('get_alert_settings'),
   saveAlertSettings: (config: AlertConfig, telegramToken?: string, smtpPassword?: string) =>
     invoke<AlertSettings>('save_alert_settings', {
