@@ -199,6 +199,49 @@ fn eval_group(g: &Group, ctx: &HashMap<String, Series>, i: usize) -> bool {
     }
 }
 
+/// Price sources plus every variable of `rs` as series, and the chart pane of
+/// each variable.
+fn context(rs: &Ruleset, bars: &[Bar]) -> Result<(HashMap<String, Series>, HashMap<String, String>), String> {
+    let mut ctx = sources(bars);
+    let mut panes: HashMap<String, String> = HashMap::new();
+    for v in &rs.vars {
+        let s = compute_var(v, bars, &ctx)?;
+        panes.insert(v.id.clone(), pane_of(v, &panes));
+        ctx.insert(v.id.clone(), s);
+    }
+    Ok((ctx, panes))
+}
+
+/// What a ruleset says to do on the latest closed bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Entry,
+    Exit,
+}
+
+/// Live decision for an algo: look at the latest closed bar (`closed - 1`)
+/// only. The caller knows whether a position is really open (`in_pos`), so
+/// unlike `evaluate` the answer does not depend on how much history was
+/// loaded: flat -> `Entry` when the entry conditions hold; in a position ->
+/// `Exit` when the exit conditions hold (never when there are none).
+pub fn decide(rs: &Ruleset, bars: &[Bar], closed: usize, in_pos: bool) -> Result<Option<Decision>, String> {
+    let errs = rs.validate();
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
+    let closed = closed.min(bars.len());
+    if closed == 0 {
+        return Ok(None);
+    }
+    let (ctx, _) = context(rs, bars)?;
+    let i = closed - 1;
+    Ok(if in_pos {
+        (has_conditions(&rs.exit) && eval_group(&rs.exit, &ctx, i)).then_some(Decision::Exit)
+    } else {
+        eval_group(&rs.entry, &ctx, i).then_some(Decision::Entry)
+    })
+}
+
 /// Evaluate `rs` over `bars`. Only bars `[..closed]` can produce signals (the
 /// forming candle is excluded so signals never repaint). Entry fires only when
 /// flat and Exit only when in a position; with no Exit conditions Entry is not
@@ -212,13 +255,7 @@ pub fn evaluate(rs: &Ruleset, bars: &[Bar], closed: usize) -> Result<RuleOutput,
     if bars.is_empty() {
         return Ok(out);
     }
-    let mut ctx = sources(bars);
-    let mut panes: HashMap<String, String> = HashMap::new();
-    for v in &rs.vars {
-        let s = compute_var(v, bars, &ctx)?;
-        panes.insert(v.id.clone(), pane_of(v, &panes));
-        ctx.insert(v.id.clone(), s);
-    }
+    let (ctx, panes) = context(rs, bars)?;
 
     let rid = if rs.id.is_empty() { "draft" } else { rs.id.as_str() };
     for v in rs.vars.iter().filter(|v| v.plot) {
@@ -331,6 +368,24 @@ mod tests {
         let b = bars_from(&[99.0, 101.0, 102.0, 103.0]);
         assert_eq!(evaluate(&r, &b, 4).unwrap().signals.len(), 3);
         assert_eq!(evaluate(&r, &b, 3).unwrap().signals.len(), 2);
+    }
+
+    #[test]
+    fn decide_looks_at_the_latest_closed_bar_and_the_real_position() {
+        let r = rs(vec![], vec![cond("close", ">", "100")], vec![cond("close", "<", "100")]);
+        let b = bars_from(&[99.0, 101.0, 99.0]);
+        // Flat: entry is true on bar 1 (index 1), false on bar 2.
+        assert_eq!(decide(&r, &b, 2, false).unwrap(), Some(Decision::Entry));
+        assert_eq!(decide(&r, &b, 3, false).unwrap(), None);
+        // In a position: exit is true on the last bar, entry is not asked.
+        assert_eq!(decide(&r, &b, 3, true).unwrap(), Some(Decision::Exit));
+        assert_eq!(decide(&r, &b, 2, true).unwrap(), None);
+        assert_eq!(decide(&r, &b, 0, false).unwrap(), None);
+        // No exit conditions: a position is never exited by the signal.
+        let ungated = rs(vec![], vec![cond("close", ">", "100")], vec![]);
+        assert_eq!(decide(&ungated, &b, 3, true).unwrap(), None);
+        // Invalid rulesets are refused.
+        assert!(decide(&rs(vec![], vec![], vec![]), &b, 3, false).is_err());
     }
 
     #[test]

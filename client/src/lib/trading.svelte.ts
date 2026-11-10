@@ -13,6 +13,8 @@ class TradingStore {
   alertVersion = $state(0);
   /** Bumped on every `copier-update` (settings saved, copy placed, followed or failed). */
   copierVersion = $state(0);
+  /** Bumped on every `algo-update` (armed, disarmed, entered, exited, journal entry). */
+  algoVersion = $state(0);
   private unlisten: UnlistenFn[] = [];
   private started = false;
 
@@ -35,6 +37,9 @@ class TradingStore {
       }),
       await listen('copier-update', () => {
         this.copierVersion++;
+      }),
+      await listen('algo-update', () => {
+        this.algoVersion++;
       })
     );
   }

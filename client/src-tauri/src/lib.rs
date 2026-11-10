@@ -1,5 +1,6 @@
 mod accounts;
 mod alerts;
+mod algo;
 mod chain;
 mod charts;
 mod commands;
@@ -66,6 +67,8 @@ pub fn run() {
             // price feed for open positions / pending paper orders.
             trading_svc.start(ltp_rx, broker_rx);
             trading::feed::spawn(state.clone());
+            // Algos: evaluate armed algos on every bar close of their underlying.
+            algo::runner::spawn(state.clone(), app.handle().clone());
 
             // Market-clock supervisor: keeps NSE time offset fresh and flips
             // the shared session between Active and Idle.
@@ -146,6 +149,13 @@ pub fn run() {
             commands::save_ruleset,
             commands::delete_ruleset,
             commands::validate_ruleset,
+            commands::list_algos,
+            commands::save_algo,
+            commands::delete_algo,
+            commands::set_algo_armed,
+            commands::validate_algo,
+            commands::list_algo_journal,
+            commands::clear_algo_journal,
             commands::backfill_chart,
             commands::place_order,
             commands::cancel_order,

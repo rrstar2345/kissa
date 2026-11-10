@@ -35,7 +35,6 @@ impl TradingService {
 
     /// Why new entries are blocked for the account right now: the kill
     /// switch or an active daily-loss halt. `None` = allowed.
-    #[allow(dead_code)] // used by algo trading (roadmap)
     pub async fn halt_reason(&self, account_id: &str) -> Option<String> {
         let today = today_ist();
         if let Ok(Some(k)) = risk::get_halt(&self.pool, GLOBAL).await {

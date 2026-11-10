@@ -39,7 +39,7 @@ pub struct FnoIndex {
     pub index_names: Vec<String>,
 }
 
-fn builtin_index_names(symbol: &str) -> &'static [&'static str] {
+pub fn builtin_index_names(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "NIFTY" => &["NIFTY 50"],
         "BANKNIFTY" => &["NIFTY BANK"],

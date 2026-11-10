@@ -574,3 +574,78 @@ export interface AlertRow {
   detail: string;
   attempts: number;
 }
+
+// ----------------------------------------------------------------- algos ---
+
+export type ExpirySel = 'current' | 'next' | 'next1' | 'next2' | 'next3';
+export type SideSel = 'ce' | 'pe' | 'both';
+
+export interface AlgoInstrument {
+  type: 'option';
+  underlying: string;
+  expiry: ExpirySel;
+  /** Strikes above (+) or below (-) the at-the-money strike. */
+  strikeOffset: number;
+  side: SideSel;
+}
+
+export interface AlgoAction {
+  product: Product;
+  /** Rupees per account; decides the lots. */
+  capital: number;
+  bufferTicks: number;
+  stopLossPct: number | null;
+  targetPct: number | null;
+}
+
+export interface Algo {
+  id: string;
+  name: string;
+  signalId: string;
+  instrument: AlgoInstrument;
+  /** Minutes only: 1m, 5m, 15m... */
+  interval: string;
+  action: AlgoAction;
+  accounts: string[];
+  /** Trade-copier switch. */
+  copier: boolean;
+  /** Per-algo permission to trade live (Dhan) accounts. */
+  allowLive: boolean;
+}
+
+export interface AlgoLeg {
+  accountId: string;
+  instrument: string;
+  symbol: string;
+  expiry: string;
+  strike: number;
+  isCall: boolean;
+  product: Product;
+  lots: number;
+  orderId: string;
+  entryPrice: number;
+  stop: number | null;
+  target: number | null;
+  bracket: boolean;
+  propagate: boolean;
+}
+
+export interface AlgoView {
+  algo: Algo;
+  signalName: string | null;
+  armed: boolean;
+  phase: 'flat' | 'in_position';
+  legs: AlgoLeg[];
+  lastBarTs: number;
+  updatedAt: string;
+}
+
+export interface AlgoJournalRow {
+  id: number;
+  ts: string;
+  algoId: string;
+  algoName: string;
+  level: 'info' | 'warn' | 'error';
+  kind: string;
+  message: string;
+}

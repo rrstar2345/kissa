@@ -45,13 +45,15 @@ pub enum Kind {
     DailySummary,
     /// A trade-copier copy failed or could not follow its master order.
     Copier,
+    /// An algo entered, exited, failed or was disarmed.
+    Algo,
     /// The Test button. Not a user-selectable event.
     Test,
 }
 
 impl Kind {
     /// The events the user can switch on and off.
-    pub const EVENTS: [Kind; 7] = [
+    pub const EVENTS: [Kind; 8] = [
         Kind::Fill,
         Kind::Rejection,
         Kind::Risk,
@@ -59,6 +61,7 @@ impl Kind {
         Kind::TokenExpiry,
         Kind::DailySummary,
         Kind::Copier,
+        Kind::Algo,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -70,6 +73,7 @@ impl Kind {
             Kind::TokenExpiry => "token_expiry",
             Kind::DailySummary => "daily_summary",
             Kind::Copier => "copier",
+            Kind::Algo => "algo",
             Kind::Test => "test",
         }
     }
@@ -83,6 +87,7 @@ impl Kind {
             Kind::TokenExpiry => "Token expiry",
             Kind::DailySummary => "Daily P&L summary",
             Kind::Copier => "Trade copier",
+            Kind::Algo => "Algos",
             Kind::Test => "Test",
         }
     }
@@ -96,6 +101,7 @@ impl Kind {
             Kind::TokenExpiry => "A saved Fyers or Dhan access token is about to expire, or probably has.",
             Kind::DailySummary => "Net P&L of every account after the close, on days with activity.",
             Kind::Copier => "A copy to a child account failed (blocked, rejected, no account) or could not follow a cancel / modify of the master order.",
+            Kind::Algo => "An algo placed an entry or exit, could not place an order, or was disarmed (kill switch, loss halt, error).",
             Kind::Test => "",
         }
     }

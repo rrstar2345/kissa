@@ -4,6 +4,7 @@
 //! * `exit`: Exit position / Exit all.
 //! * `squareoff`: paper INTRADAY auto square-off.
 //! * `copier`: trade copier (replicate master orders, follow their cancel / modify).
+//! * `algo`: hooks for the algo runner (price watch, orders with / without the copier, exits).
 //! * `alerts`: alert messages (fills, rejections, risk, daily summary, token expiry).
 //! * `risk`: risk checks in `place`, the daily-loss monitor and the kill switch.
 //! * `bracket`: stop-loss / target legs attached to an entry (paper), with OCO.
@@ -15,6 +16,7 @@
 //! ledger and emits `order-update`.
 
 mod alerts;
+mod algo;
 mod bracket;
 mod copier;
 mod exit;
@@ -77,6 +79,8 @@ pub struct TradingService {
     me: Weak<TradingService>,
     /// Serialises trade-copier work: copies, then the follow-ups that refer to them.
     copier_lock: Arc<Mutex<()>>,
+    /// (symbol, expiry) pairs armed algos need priced (set by the algo runner).
+    algo_watch: std::sync::RwLock<HashSet<(String, String)>>,
 }
 
 impl TradingService {
@@ -112,6 +116,7 @@ impl TradingService {
             alerts,
             me: me.clone(),
             copier_lock: Arc::new(Mutex::new(())),
+            algo_watch: std::sync::RwLock::new(HashSet::new()),
         });
         (svc, events_rx)
     }
@@ -135,7 +140,11 @@ impl TradingService {
 
     /// (symbol, expiry) pairs the background feed must keep priced.
     pub fn watched_contracts(&self) -> HashSet<(String, String)> {
-        self.brokers.watched_contracts()
+        let mut set = self.brokers.watched_contracts();
+        if let Ok(w) = self.algo_watch.read() {
+            set.extend(w.iter().cloned());
+        }
+        set
     }
 
     fn emit_order(&self, o: &OrderRow) {

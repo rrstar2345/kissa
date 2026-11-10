@@ -16,6 +16,7 @@
     { href: '/chain', label: 'Option Chain', icon: 'M3 5h18M3 12h18M3 19h18M9 3v18M15 3v18' },
     { href: '/charts', label: 'Charts', icon: 'M3 3v18h18M7 14l4-4 3 3 5-6' },
     { href: '/signals', label: 'Signals', icon: 'M3 12h4l3-8 4 16 3-8h4' },
+    { href: '/algos', label: 'Algos', icon: 'M12 8V4H8M4 12a8 8 0 1016 0 8 8 0 00-16 0zM9 13h.01M15 13h.01M9.5 16.5h5' },
     { href: '/orders', label: 'Orders', icon: 'M9 5h10M9 12h10M9 19h10M4 5h.01M4 12h.01M4 19h.01' },
     { href: '/copier', label: 'Copier', icon: 'M8 8h12v12H8zM4 16V4h12' },
     { href: '/risk', label: 'Risk', icon: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM12 8v5M12 16h.01' },

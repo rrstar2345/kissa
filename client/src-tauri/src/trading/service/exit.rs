@@ -19,6 +19,12 @@ impl TradingService {
     /// Close one position. Returns the exit order and how many open orders
     /// were cancelled first.
     async fn exit_one(&self, p: &Position) -> Result<(OrderRow, usize)> {
+        self.exit_one_with(p, true).await
+    }
+
+    /// `exit_one`; with `propagate` false the exit is not replicated by the
+    /// trade copier (an algo whose copier switch is off).
+    pub(super) async fn exit_one_with(&self, p: &Position, propagate: bool) -> Result<(OrderRow, usize)> {
         // Let in-flight trade-copier copies finish, then act on the position as
         // it is now: Exit all on the master and its copies must not exit twice.
         drop(self.copier_lock.lock().await);
@@ -48,23 +54,22 @@ impl TradingService {
             }
         }
 
-        let order = self
-            .place(PlaceOrderInput {
-                account_id: p.account_id.clone(),
-                symbol: p.symbol.clone(),
-                expiry: p.expiry.clone(),
-                strike: p.strike,
-                is_call: p.is_call,
-                side: side.into(),
-                product: p.product.clone(),
-                order_type: "LIMIT".into(),
-                validity: "DAY".into(),
-                lots,
-                price,
-                trigger_price: None,
-                bracket: None,
-            })
-            .await?;
+        let input = PlaceOrderInput {
+            account_id: p.account_id.clone(),
+            symbol: p.symbol.clone(),
+            expiry: p.expiry.clone(),
+            strike: p.strike,
+            is_call: p.is_call,
+            side: side.into(),
+            product: p.product.clone(),
+            order_type: "LIMIT".into(),
+            validity: "DAY".into(),
+            lots,
+            price,
+            trigger_price: None,
+            bracket: None,
+        };
+        let order = if propagate { self.place(input).await? } else { self.place_inner(input).await? };
         Ok((order, cancelled))
     }
 

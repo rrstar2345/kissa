@@ -392,6 +392,65 @@ pub async fn resume_account(account_id: String, state: State<'_, SharedState>) -
     state.trading.resume_account(&account_id).await.map_err(err)
 }
 
+// ----------------------------------------------------------------- algos ---
+
+use crate::algo::{self, Algo, AlgoView, JournalRow};
+use tauri::Emitter;
+
+fn algo_changed(app: &AppHandle) {
+    let _ = app.emit("algo-update", true);
+}
+
+/// Every algo with its run state (armed, flat / in position, open legs).
+#[tauri::command]
+pub async fn list_algos(state: State<'_, SharedState>) -> Res<Vec<AlgoView>> {
+    algo::service::list_views(&state.db).await.map_err(err)
+}
+
+/// Validate and save an algo (a blank id creates one).
+#[tauri::command]
+pub async fn save_algo(algo: Algo, app: AppHandle, state: State<'_, SharedState>) -> Res<Algo> {
+    let saved = algo::service::save(&state.db, algo).await.map_err(err)?;
+    algo_changed(&app);
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn delete_algo(id: String, app: AppHandle, state: State<'_, SharedState>) -> Res<()> {
+    algo::service::delete(&state.db, &id).await.map_err(err)?;
+    algo_changed(&app);
+    Ok(())
+}
+
+/// Arm (after safety checks) or disarm an algo.
+#[tauri::command]
+pub async fn set_algo_armed(id: String, armed: bool, app: AppHandle, state: State<'_, SharedState>) -> Res<AlgoView> {
+    algo::service::set_armed(state.inner(), &id, armed).await.map_err(err)?;
+    algo_changed(&app);
+    algo::service::view(&state.db, &id).await.map_err(err)
+}
+
+/// Problems with an algo's own fields (the form shows them as you type).
+#[tauri::command]
+pub fn validate_algo(algo: Algo) -> Vec<String> {
+    let mut a = algo;
+    a.normalize();
+    a.validate()
+}
+
+/// The decision journal, newest first; one algo or all.
+#[tauri::command]
+pub async fn list_algo_journal(algo_id: Option<String>, limit: Option<i64>, state: State<'_, SharedState>) -> Res<Vec<JournalRow>> {
+    algo::store::journal_list(&state.db, algo_id.as_deref(), limit.unwrap_or(300)).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn clear_algo_journal(algo_id: Option<String>, app: AppHandle, state: State<'_, SharedState>) -> Res<()> {
+    algo::store::journal_clear(&state.db, algo_id.as_deref()).await.map_err(err)?;
+    algo_changed(&app);
+    Ok(())
+}
+
 // ---------------------------------------------------------------- copier ---
 
 use crate::trading::copier::{CopierConfig, CopierOverview};

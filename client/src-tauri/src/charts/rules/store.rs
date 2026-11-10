@@ -63,7 +63,18 @@ pub async fn save(pool: &SqlitePool, mut rs: Ruleset) -> Result<Ruleset> {
     Ok(rs)
 }
 
+/// Delete a signal. Refused while any algo uses it.
 pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
+    let used = crate::algo::store::names_using_signal(pool, id).await?;
+    if !used.is_empty() {
+        return Err(anyhow!(
+            "This signal is used by {} algo{} ({}). Change or delete {} first.",
+            used.len(),
+            if used.len() == 1 { "" } else { "s" },
+            used.join(", "),
+            if used.len() == 1 { "it" } else { "them" }
+        ));
+    }
     sqlx::query("DELETE FROM rulesets WHERE id = ?").bind(id).execute(pool).await?;
     Ok(())
 }
