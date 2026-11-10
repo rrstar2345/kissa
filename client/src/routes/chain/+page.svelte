@@ -105,6 +105,12 @@
   const optionStream = $derived(
     market.status?.streams.find((s) => s.name.startsWith('options:'))
   );
+
+  // What the selected source's exchange status says (holidays included).
+  const sourceStatus = $derived(source === 'fyers' ? market.status?.fyers : market.status?.nse);
+  const sourceName = $derived(source === 'fyers' ? 'Fyers' : 'NSE');
+  const marketClosed = $derived(sourceStatus?.state === 'closed');
+  const marketPreOpen = $derived(sourceStatus?.state === 'preOpen');
 </script>
 
 <div class="flex flex-col gap-4">
@@ -136,6 +142,21 @@
     <div role="alert" class="alert alert-error alert-soft py-2 text-sm">
       <span>{error}</span>
       {#if source === 'fyers'}<a href="/accounts" class="link">Open Accounts</a>{/if}
+    </div>
+  {/if}
+
+  {#if marketClosed && snapshot}
+    <div role="status" class="alert alert-soft py-2 text-sm">
+      <span>
+        {sourceName} reports the market closed (weekend, holiday or after the close).
+        {source === 'fyers'
+          ? "Showing the last fetched data; polling resumes when it opens."
+          : 'The table shows what was last received; ticks resume when it opens.'}
+      </span>
+    </div>
+  {:else if marketPreOpen}
+    <div role="status" class="alert alert-soft py-2 text-sm">
+      <span>{sourceName} is in pre-open. Option prices start at 9:15 IST.</span>
     </div>
   {/if}
 
@@ -185,9 +206,12 @@
         <span class="loading loading-dots loading-md text-primary"></span>
         <p class="font-medium">Waiting for option ticks…</p>
         <p class="max-w-md text-sm text-base-content/60">
-          {#if source === 'nse' && !market.status?.withinWindow}
-            NSE only streams while the market is open (about 9:00–15:30 IST, Mon–Fri). The app checks periodically.
+          {#if source === 'nse' && marketClosed}
+            NSE reports the market closed (weekend, holiday or outside 9:15–15:30 IST), so there is nothing to stream.
+            The app checks the exchange status and starts streaming when it opens.
             Switch to Fyers to view the last session's data now.
+          {:else if source === 'nse' && marketPreOpen}
+            NSE is in pre-open. Option ticks start at 9:15 IST.
           {:else if source === 'nse'}
             Stream: {optionStream?.state ?? 'starting'}{optionStream?.lastError ? ` — ${optionStream.lastError}` : ''}. The table appears once the index price arrives, so ATM is correct.
           {:else}

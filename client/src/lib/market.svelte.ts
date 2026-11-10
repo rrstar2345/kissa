@@ -1,6 +1,33 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { api } from './api';
-import type { IndexTick, MarketStatus } from './types';
+import type { IndexTick, MarketStatus, SourceStatus } from './types';
+
+/** Short label for a source's market state, e.g. for a header badge. */
+export function stateLabel(s: SourceStatus | undefined): string {
+  switch (s?.state) {
+    case 'open':
+      return 'Open';
+    case 'preOpen':
+      return 'Pre-open';
+    case 'closed':
+      return 'Closed';
+    default:
+      return s?.reason === 'error' ? 'Status n/a' : 'Checking…';
+  }
+}
+
+export function stateBadge(s: SourceStatus | undefined): string {
+  switch (s?.state) {
+    case 'open':
+      return 'badge-success';
+    case 'preOpen':
+      return 'badge-warning';
+    case 'closed':
+      return 'badge-ghost';
+    default:
+      return 'badge-outline';
+  }
+}
 
 class MarketStore {
   status = $state<MarketStatus | null>(null);

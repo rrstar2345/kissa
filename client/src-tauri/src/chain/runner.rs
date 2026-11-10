@@ -16,6 +16,7 @@ use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
 use crate::market::streamers::options;
 use crate::market::market_clock::{self, SharedSessionState};
+use crate::market::status::SharedMarketStatus;
 use crate::settings::AppConfig;
 use crate::stats::SharedStats;
 use crate::trading::ltp::LtpStore;
@@ -162,10 +163,12 @@ pub fn spawn_nse(
     Ok(ChainHandle { tasks: vec![streamer, engine_task], stream_key: Some(stream_key), target })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_fyers(
     app: AppHandle,
     cfg: AppConfig,
     creds: FyersCreds,
+    status: SharedMarketStatus,
     recorder: Arc<Recorder>,
     ltp: Arc<LtpStore>,
     symbol: String,
@@ -174,27 +177,49 @@ pub fn spawn_fyers(
     let target = (symbol.clone(), expiry.date.clone());
     let task = tokio::spawn(async move {
         let poll = Duration::from_secs(cfg.fyers.poll_secs.max(1));
+        // Set once the closed-market data has been fetched: no more API calls
+        // until Fyers reports the market open.
+        let mut fetched_closed = false;
         loop {
-            match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(&expiry.value)).await {
-                Ok(data) => {
-                    let snap = fyers::to_snapshot(&data, &symbol, &expiry, cfg.risk_free_rate);
-                    let now = market_clock::get_ist_now().timestamp();
-                    for row in &snap.rows {
-                        for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
-                            if let Some(px) = leg.ltp {
-                                let key = option_key(&symbol, &expiry.date, row.strike, is_call);
-                                ltp.set(&key, px);
-                                recorder.record(&key, now, px, leg.volume, leg.oi);
+            // Subscribe before reading the status, so a change right after is not missed.
+            let mut changes = status.subscribe_fyers();
+            let polling = changes
+                .borrow_and_update()
+                .allows_polling(market_clock::is_within_trading_window(market_clock::get_ist_now()));
+
+            if polling || !fetched_closed {
+                let mut ok = false;
+                match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(&expiry.value)).await {
+                    Ok(data) => {
+                        ok = true;
+                        let snap = fyers::to_snapshot(&data, &symbol, &expiry, cfg.risk_free_rate);
+                        let now = market_clock::get_ist_now().timestamp();
+                        for row in &snap.rows {
+                            for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
+                                if let Some(px) = leg.ltp {
+                                    let key = option_key(&symbol, &expiry.date, row.strike, is_call);
+                                    ltp.set(&key, px);
+                                    recorder.record(&key, now, px, leg.volume, leg.oi);
+                                }
                             }
                         }
+                        let _ = app.emit(SNAPSHOT_EVENT, snap);
                     }
-                    let _ = app.emit(SNAPSHOT_EVENT, snap);
+                    Err(e) => {
+                        let _ = app.emit(STATUS_EVENT, ChainStatus { state: "error", message: e.to_string() });
+                    }
                 }
-                Err(e) => {
-                    let _ = app.emit(STATUS_EVENT, ChainStatus { state: "error", message: e.to_string() });
-                }
+                fetched_closed = !polling && ok;
             }
-            tokio::time::sleep(poll).await;
+
+            if polling {
+                tokio::time::sleep(poll).await;
+            } else {
+                // Closed or pre-open: prices do not move. Wake when Fyers reports a
+                // change; re-check hourly, or in a minute after a failed fetch.
+                let wait = Duration::from_secs(if fetched_closed { 3600 } else { 60 });
+                let _ = tokio::time::timeout(wait, changes.changed()).await;
+            }
         }
     });
     ChainHandle { tasks: vec![task], stream_key: None, target }

@@ -2,7 +2,7 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { market } from '$lib/market.svelte';
+  import { market, stateBadge, stateLabel } from '$lib/market.svelte';
   import { quotes } from '$lib/quotes.svelte';
   import { theme } from '$lib/theme.svelte';
   import { trading } from '$lib/trading.svelte';
@@ -87,9 +87,22 @@
         <KillSwitch />
         {#if market.status}
           <span class="num text-base-content/70">IST {market.status.istTime}</span>
-          <span class="badge badge-sm {market.status.withinWindow ? 'badge-success' : 'badge-ghost'}">
-            {market.status.withinWindow ? 'Market hours' : 'Closed'}
+          {@const nse = market.status.nse}
+          <span
+            class="badge badge-sm {stateBadge(nse)}"
+            title="{nse.message}{nse.checkedAt ? ` (checked ${nse.checkedAt} IST)` : ''}"
+          >
+            NSE {stateLabel(nse)}
           </span>
+          {#if market.status.fyers.reason !== 'notUsed'}
+            {@const fy = market.status.fyers}
+            <span
+              class="badge badge-sm {stateBadge(fy)}"
+              title="{fy.message}{fy.checkedAt ? ` (checked ${fy.checkedAt} IST)` : ''}"
+            >
+              Fyers {stateLabel(fy)}
+            </span>
+          {/if}
           <span class="flex items-center gap-1.5" title="NSE stream state: {market.status.mode}">
             <span class="size-2 rounded-full {live ? 'bg-success' : 'bg-base-content/30'}"></span>
             {live ? 'Live' : market.status.mode === 'IDLE' ? 'Idle' : 'Connecting'}

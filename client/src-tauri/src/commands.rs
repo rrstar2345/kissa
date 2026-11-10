@@ -10,6 +10,7 @@ use crate::charts::{backfill, indicators, resample, store, BackfillResult, Chart
 use crate::chain::{fyers, ExpiryItem};
 use crate::db;
 use crate::market::events::IndexTick;
+use crate::market::status::SourceStatus;
 use crate::market::{market_clock, symbols};
 use crate::state::SharedState;
 use crate::stats::StreamStat;
@@ -28,8 +29,12 @@ const FALLBACK_SYMBOLS: [&str; 5] = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIF
 #[serde(rename_all = "camelCase")]
 pub struct MarketStatus {
     pub ist_time: String,
+    /// Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use `nse` / `fyers`.
     pub within_window: bool,
     pub mode: String,
+    /// What each source's exchange status API says (open, pre-open, closed, unknown).
+    pub nse: SourceStatus,
+    pub fyers: SourceStatus,
     pub streams: Vec<StreamStat>,
 }
 
@@ -43,6 +48,8 @@ pub async fn market_status(state: State<'_, SharedState>) -> Res<MarketStatus> {
         ist_time: format!("{:02}:{:02}:{:02}", ist.hour(), ist.minute(), ist.second()),
         within_window: market_clock::is_within_trading_window(now),
         mode: state.session.mode().await.label().to_string(),
+        nse: state.market_status.nse(),
+        fyers: state.market_status.fyers(),
         streams,
     })
 }
@@ -108,7 +115,16 @@ pub async fn start_chain(
     }
     let handle = if source == "fyers" {
         let creds = active_fyers_creds(&state).await.map_err(err)?;
-        runner::spawn_fyers(app, state.config.clone(), creds, state.recorder.clone(), state.ltp.clone(), symbol, expiry)
+        runner::spawn_fyers(
+            app,
+            state.config.clone(),
+            creds,
+            state.market_status.clone(),
+            state.recorder.clone(),
+            state.ltp.clone(),
+            symbol,
+            expiry,
+        )
     } else {
         let index_names = state
             .fno

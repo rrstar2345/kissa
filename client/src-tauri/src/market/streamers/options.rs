@@ -85,8 +85,12 @@ pub async fn run(
         s.ensure_stream(&stream_key);
     }
 
+    // Connections in a row that ended without one real tick (drives the backoff).
+    let mut quiet_runs: u32 = 0;
+
     loop {
-        let mode = session.mode().await;
+        // Options trade from 9:15: idle during pre-open, unlike the indices.
+        let mode = session.options_mode().await;
 
         match mode {
             SessionMode::Active => {
@@ -96,6 +100,7 @@ pub async fn run(
                     stat.state = ConnState::Connecting;
                 }
 
+                let ticks_before = super::ticks_received(&stats, &stream_key).await;
                 match stream_active(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session).await {
                     Ok(_) => info!("Options stream [{}] closed gracefully", stream_key),
                     Err(e) => {
@@ -112,9 +117,17 @@ pub async fn run(
                     break;
                 }
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(
+                // A connection that delivered no real tick backs off, so a server that
+                // accepts and then closes (a holiday, say) is not reconnected every 5 s.
+                if super::ticks_received(&stats, &stream_key).await > ticks_before {
+                    quiet_runs = 0;
+                } else {
+                    quiet_runs = quiet_runs.saturating_add(1);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(super::reconnect_delay_secs(
                     config.market_runtime.reconnect_delay_seconds,
-                ))
+                    quiet_runs,
+                )))
                 .await;
             }
             SessionMode::Idle => {
@@ -124,20 +137,34 @@ pub async fn run(
                     stat.state = ConnState::Idle;
                 }
 
-                if let Err(e) =
-                    poll_once(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session).await
-                {
-                    debug!("Options idle poll [{}] error (expected outside market hours): {}", stream_key, e);
-                }
+                quiet_runs = 0;
 
-                if tx.is_closed() {
-                    break;
-                }
+                // Subscribe before checking, so a status change right after is not missed.
+                let mut changes = session.subscribe_nse();
+                if session.known_idle(true) {
+                    // NSE says closed (or still pre-open, when options do not trade yet):
+                    // do not connect at all. Wake on a status change, or re-check in 30 s.
+                    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(30), changes.changed()).await;
+                    if tx.is_closed() {
+                        break;
+                    }
+                } else {
+                    // Status unknown: probe now and then, as before.
+                    if let Err(e) =
+                        poll_once(&config, &symbol, &expiry, &tx, &stats, &stream_key, &session).await
+                    {
+                        debug!("Options idle poll [{}] error (expected outside market hours): {}", stream_key, e);
+                    }
 
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    config.market_runtime.idle_poll_interval_secs,
-                ))
-                .await;
+                    if tx.is_closed() {
+                        break;
+                    }
+
+                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                        config.market_runtime.idle_poll_interval_secs,
+                    ))
+                    .await;
+                }
             }
         }
     }
@@ -232,7 +259,7 @@ async fn stream_active(
     let (_, mut read) = ws_stream.split();
 
     loop {
-        if session.mode().await == SessionMode::Idle {
+        if session.options_mode().await == SessionMode::Idle {
             info!("Switching options stream [{}] to idle mode; closing active connection.", stream_key);
             return Ok(());
         }
@@ -297,7 +324,7 @@ async fn poll_once(
         match tokio::time::timeout(remaining, read.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
                 handle_message(&text, tx, stats, stream_key, session).await?;
-                if session.mode().await == SessionMode::Active {
+                if session.options_mode().await == SessionMode::Active {
                     break;
                 }
             }

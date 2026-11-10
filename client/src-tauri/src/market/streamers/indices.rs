@@ -62,17 +62,26 @@ pub async fn run(
         s.ensure_stream(STREAM_NAME);
     }
 
+    // Connections in a row that ended without one real tick (drives the backoff).
+    let mut quiet_runs: u32 = 0;
+    // Idle polls made only to put the last prices in the header while the market is closed.
+    let mut seed_attempts: u32 = 0;
+
     loop {
+        // Index values exist during pre-open too, so this follows `mode()`
+        // (the option streams use `options_mode()` and wait for 9:15).
         let mode = session.mode().await;
 
         match mode {
             SessionMode::Active => {
+                seed_attempts = 0;
                 {
                     let mut s = stats.write().await;
                     let stat = s.ensure_stream(STREAM_NAME);
                     stat.state = ConnState::Connecting;
                 }
 
+                let ticks_before = super::ticks_received(&stats, STREAM_NAME).await;
                 match stream_active(&config, &stats, &session, &sink).await {
                     Ok(_) => info!("Indices stream closed gracefully"),
                     Err(e) => {
@@ -85,10 +94,17 @@ pub async fn run(
                     }
                 }
 
-
-                tokio::time::sleep(tokio::time::Duration::from_secs(
+                // A connection that delivered no real tick backs off, so a server that
+                // accepts and then closes (a holiday, say) is not reconnected every 5 s.
+                if super::ticks_received(&stats, STREAM_NAME).await > ticks_before {
+                    quiet_runs = 0;
+                } else {
+                    quiet_runs = quiet_runs.saturating_add(1);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(super::reconnect_delay_secs(
                     config.market_runtime.reconnect_delay_seconds,
-                ))
+                    quiet_runs,
+                )))
                 .await;
             }
             SessionMode::Idle => {
@@ -98,20 +114,40 @@ pub async fn run(
                     stat.state = ConnState::Idle;
                 }
 
-                if let Err(e) = poll_once(&config, &stats, &session, &sink).await {
-                    debug!("Indices idle poll error (expected outside market hours): {}", e);
-                }
+                quiet_runs = 0;
 
-                // Wait out the poll interval in short slices so a switch to
-                // Active (supervisor tick, or a real tick seen by the poll)
-                // is picked up within a second instead of after the full wait.
-                let deadline = tokio::time::Instant::now()
-                    + tokio::time::Duration::from_secs(config.market_runtime.idle_poll_interval_secs);
-                while tokio::time::Instant::now() < deadline {
-                    if session.mode().await == SessionMode::Active {
-                        break;
+                // Subscribe before checking, so a status change right after is not missed.
+                let mut changes = session.subscribe_nse();
+                if session.known_idle(false) {
+                    // NSE says the market is closed: no polling. Connect only to put the
+                    // last prices in the header (a few tries at most, and only while no
+                    // price has arrived yet), then wait for a status change.
+                    let have_prices = super::ticks_received(&stats, STREAM_NAME).await > 0;
+                    if !have_prices && seed_attempts < 3 {
+                        seed_attempts += 1;
+                        if let Err(e) = poll_once(&config, &stats, &session, &sink).await {
+                            debug!("Indices price seed error (market closed): {}", e);
+                        }
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(30), changes.changed()).await;
+                } else {
+                    seed_attempts = 0;
+                    // Status unknown: probe now and then, as before.
+                    if let Err(e) = poll_once(&config, &stats, &session, &sink).await {
+                        debug!("Indices idle poll error (expected outside market hours): {}", e);
+                    }
+
+                    // Wait out the poll interval in short slices so a switch to
+                    // Active (supervisor tick, or a real tick seen by the poll)
+                    // is picked up within a second instead of after the full wait.
+                    let deadline = tokio::time::Instant::now()
+                        + tokio::time::Duration::from_secs(config.market_runtime.idle_poll_interval_secs);
+                    while tokio::time::Instant::now() < deadline {
+                        if session.mode().await == SessionMode::Active {
+                            break;
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
                 }
             }
         }

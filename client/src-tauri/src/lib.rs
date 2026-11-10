@@ -48,12 +48,14 @@ pub fn run() {
                 app.handle().clone(),
                 alerts.clone(),
             );
+            let market_status = market::status::MarketStatusService::new();
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
                 paths: paths.clone(),
                 db: pool.clone(),
                 stats: stats::new_shared_stats(),
-                session: market_clock::new_shared_session_state(),
+                session: market_clock::new_shared_session_state(market_status.clone()),
+                market_status,
                 indices: new_index_store(),
                 fno: RwLock::new(Vec::new()),
                 chain: Mutex::new(None),
@@ -71,8 +73,12 @@ pub fn run() {
             // Algos: evaluate armed algos on every bar close of their underlying.
             algo::runner::spawn(state.clone(), app.handle().clone());
 
-            // Market-clock supervisor: keeps NSE time offset fresh and flips
-            // the shared session between Active and Idle.
+            // Exchange status (NSE, and Fyers when it is the data source): the
+            // only code that calls the marketStatus APIs.
+            market::status::spawn(state.clone());
+
+            // Market-clock supervisor: keeps NSE time offset fresh and
+            // re-evaluates the shared session (Active/Idle) as the clock moves.
             let (cfg, session) = (config.clone(), state.session.clone());
             tauri::async_runtime::spawn(async move {
                 loop {

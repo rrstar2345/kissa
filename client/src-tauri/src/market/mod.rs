@@ -6,5 +6,6 @@
 pub mod events;
 pub mod http;
 pub mod market_clock;
+pub mod status;
 pub mod streamers;
 pub mod symbols;

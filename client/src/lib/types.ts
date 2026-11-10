@@ -69,10 +69,24 @@ export interface StreamStat {
   reconnectCount: number;
 }
 
+export type MarketState = 'open' | 'preOpen' | 'closed' | 'unknown';
+
+/** What one data source's exchange-status API says. */
+export interface SourceStatus {
+  state: MarketState;
+  reason: 'starting' | 'weekend' | 'outsideHours' | 'reported' | 'error' | 'notUsed';
+  message: string;
+  /** IST wall clock of the last successful check (HH:MM:SS). */
+  checkedAt: string | null;
+}
+
 export interface MarketStatus {
   istTime: string;
+  /** Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use nse / fyers. */
   withinWindow: boolean;
   mode: string;
+  nse: SourceStatus;
+  fyers: SourceStatus;
   streams: StreamStat[];
 }
 

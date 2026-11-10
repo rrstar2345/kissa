@@ -124,37 +124,53 @@ async fn start(state: &SharedState, target: &Target) -> Option<Feed> {
 async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expiry_iso: String) {
     let cfg = state.config.clone();
     let mut epoch: Option<String> = None;
+    // Set once the closed-market prices have been fetched: no more API calls
+    // until Fyers reports the market open.
+    let mut fetched_closed = false;
     loop {
-        if epoch.is_none() {
-            match fyers::fetch(&cfg.fyers, &creds, &symbol, 1, None).await {
-                Ok(d) => {
-                    epoch = fyers::expiries(&d).into_iter().find(|e| e.date == expiry_iso).map(|e| e.value);
+        // Subscribe before reading the status, so a change right after is not missed.
+        let mut changes = state.market_status.subscribe_fyers();
+        let polling = changes
+            .borrow_and_update()
+            .allows_polling(market_clock::is_within_trading_window(market_clock::get_ist_now()));
+
+        if polling || !fetched_closed {
+            let mut ok = false;
+            if epoch.is_none() {
+                match fyers::fetch(&cfg.fyers, &creds, &symbol, 1, None).await {
+                    Ok(d) => {
+                        epoch = fyers::expiries(&d).into_iter().find(|e| e.date == expiry_iso).map(|e| e.value);
+                    }
+                    Err(e) => debug!("Price feed: expiry lookup failed: {e}"),
                 }
-                Err(e) => debug!("Price feed: expiry lookup failed: {e}"),
             }
-        }
-        if let Some(ep) = &epoch {
-            match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(ep.as_str())).await {
-                Ok(data) => {
-                    let item = ExpiryItem { value: ep.clone(), label: String::new(), date: expiry_iso.clone() };
-                    let snap = fyers::to_snapshot(&data, &symbol, &item, cfg.risk_free_rate);
-                    for row in &snap.rows {
-                        for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
-                            if let Some(px) = leg.ltp {
-                                state.ltp.set(&option_key(&symbol, &expiry_iso, row.strike, is_call), px);
+            if let Some(ep) = &epoch {
+                match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(ep.as_str())).await {
+                    Ok(data) => {
+                        ok = true;
+                        let item = ExpiryItem { value: ep.clone(), label: String::new(), date: expiry_iso.clone() };
+                        let snap = fyers::to_snapshot(&data, &symbol, &item, cfg.risk_free_rate);
+                        for row in &snap.rows {
+                            for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
+                                if let Some(px) = leg.ltp {
+                                    state.ltp.set(&option_key(&symbol, &expiry_iso, row.strike, is_call), px);
+                                }
                             }
                         }
                     }
+                    Err(e) => debug!("Price feed: Fyers fetch failed: {e}"),
                 }
-                Err(e) => debug!("Price feed: Fyers fetch failed: {e}"),
             }
+            fetched_closed = !polling && ok;
         }
-        // Outside the trading window prices don't move: refresh rarely.
-        let secs = if market_clock::is_within_trading_window(market_clock::get_ist_now()) {
-            cfg.fyers.poll_secs.max(5)
+
+        if polling {
+            tokio::time::sleep(Duration::from_secs(cfg.fyers.poll_secs.max(5))).await;
         } else {
-            300
-        };
-        tokio::time::sleep(Duration::from_secs(secs)).await;
+            // Closed or pre-open: prices do not move. Wake when Fyers reports a
+            // change; re-check hourly, or in 5 minutes after a failed fetch.
+            let wait = Duration::from_secs(if fetched_closed { 3600 } else { 300 });
+            let _ = tokio::time::timeout(wait, changes.changed()).await;
+        }
     }
 }

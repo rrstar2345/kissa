@@ -39,12 +39,15 @@ fn ep(base: &str, desc: &str) -> ApiEndpoint {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SystemConfig {
     pub indices_streamer: ApiEndpoint,
     pub option_ticks: ApiEndpoint,
     pub indices_info: ApiEndpoint,
     pub option_info: ApiEndpoint,
     pub current_time: ApiEndpoint,
+    pub market_status: ApiEndpoint,
+    pub holidays: ApiEndpoint,
 }
 
 impl Default for SystemConfig {
@@ -69,6 +72,14 @@ impl Default for SystemConfig {
             current_time: ep(
                 "https://www.nseindia.com/api/NextApi/dynamicApi?functionName=getCurrentTime",
                 "NSE IST server time",
+            ),
+            market_status: ep(
+                "https://www.nseindia.com/api/marketStatus",
+                "NSE market open/closed state (Capital Market row; F&O follows it)",
+            ),
+            holidays: ep(
+                "https://www.nseindia.com/api/holiday-master?type=trading",
+                "NSE trading holidays (FO array); not used yet",
             ),
         }
     }
@@ -104,6 +115,8 @@ pub struct FyersConfig {
     pub chain_url: String,
     /// Historical candles endpoint (not yet verified against live Fyers).
     pub history_url: String,
+    /// Exchange open/closed state (https://fyers.in/api-docs/v3/api/market-information/market-status/).
+    pub status_url: String,
     /// Seconds between chain polls (mind your plan's rate limits).
     pub poll_secs: u64,
     /// Strikes each side of ATM requested from Fyers (max 50).
@@ -115,6 +128,7 @@ impl Default for FyersConfig {
         Self {
             chain_url: "https://api-t1.fyers.in/data/options-chain-v3".into(),
             history_url: "https://api-t1.fyers.in/data/history".into(),
+            status_url: "https://api-t1.fyers.in/data/marketStatus".into(),
             poll_secs: 5,
             strike_count: 25,
         }

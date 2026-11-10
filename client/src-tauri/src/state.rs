@@ -7,6 +7,7 @@ use crate::chain::runner::ChainHandle;
 use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
 use crate::market::market_clock::SharedSessionState;
+use crate::market::status::SharedMarketStatus;
 use crate::market::symbols::FnoIndex;
 use crate::settings::{AppConfig, AppPaths};
 use crate::stats::SharedStats;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub db: SqlitePool,
     pub stats: SharedStats,
     pub session: SharedSessionState,
+    /// Exchange open/closed state per data source (NSE, Fyers).
+    pub market_status: SharedMarketStatus,
     pub indices: IndexStore,
     pub fno: RwLock<Vec<FnoIndex>>,
     pub chain: Mutex<Option<ChainHandle>>,
