@@ -5,6 +5,8 @@ import type {
   AlertRow,
   AlertSettings,
   BackfillResult,
+  BacktestReport,
+  BacktestRequest,
   ChartData,
   ContractInfo,
   Dashboard,
@@ -59,6 +61,8 @@ export const api = {
   listChartInstruments: () => invoke<InstrumentList>('list_chart_instruments'),
   backfillChart: (instrument: string, interval: '1m' | '1d', days: number) =>
     invoke<BackfillResult>('backfill_chart', { instrument, interval, days }),
+
+  runBacktest: (req: BacktestRequest) => invoke<BacktestReport>('run_backtest', { req }),
 
   getSetting: (key: string) => invoke<string | null>('get_setting', { key }),
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),

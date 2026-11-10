@@ -1,6 +1,7 @@
 mod accounts;
 mod alerts;
 mod algo;
+mod backtest;
 mod chain;
 mod charts;
 mod commands;
@@ -149,6 +150,7 @@ pub fn run() {
             commands::save_ruleset,
             commands::delete_ruleset,
             commands::validate_ruleset,
+            commands::run_backtest,
             commands::list_algos,
             commands::save_algo,
             commands::delete_algo,

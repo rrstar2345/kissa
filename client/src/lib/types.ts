@@ -649,3 +649,75 @@ export interface AlgoJournalRow {
   kind: string;
   message: string;
 }
+
+// -------------------------------------------------------------- backtest ---
+
+export interface BacktestRequest {
+  rulesetId: string;
+  instrument: string;
+  interval: string;
+  from: string | null;
+  to: string | null;
+  lots: number;
+  capitalPerTrade: number;
+  lotSize: number;
+  startingCapital: number;
+  stopLossPct: number | null;
+  targetPct: number | null;
+  slippageTicks: number;
+  charges: boolean;
+  brokeragePerOrder: number | null;
+  carryOvernight: boolean;
+}
+
+export interface BacktestTrade {
+  entryTs: number;
+  entryPrice: number;
+  exitTs: number;
+  exitPrice: number;
+  lots: number;
+  qty: number;
+  reason: 'signal' | 'stop_loss' | 'target' | 'eod' | 'end';
+  gross: number;
+  charges: number;
+  net: number;
+  bars: number;
+  returnPct: number;
+}
+
+export interface BacktestSummary {
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  grossPnl: number;
+  charges: number;
+  netPnl: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number | null;
+  expectancy: number;
+  best: number;
+  worst: number;
+  maxDrawdown: number;
+  maxDrawdownPct: number | null;
+  maxConsecutiveLosses: number;
+  avgBars: number;
+  returnPct: number | null;
+  skipped: number;
+}
+
+export interface BacktestReport {
+  ruleset: string;
+  instrument: string;
+  interval: string;
+  lotSize: number;
+  bars: number;
+  sessions: number;
+  firstTs: number;
+  lastTs: number;
+  summary: BacktestSummary;
+  trades: BacktestTrade[];
+  equity: { ts: number; equity: number }[];
+  warnings: string[];
+}

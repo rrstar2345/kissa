@@ -242,6 +242,21 @@ pub fn decide(rs: &Ruleset, bars: &[Bar], closed: usize, in_pos: bool) -> Result
     })
 }
 
+/// Per-bar truth of the Entry and Exit conditions, for callers that manage
+/// the position themselves (backtests). `exit` is all false when the ruleset
+/// has no Exit conditions.
+pub fn conditions(rs: &Ruleset, bars: &[Bar]) -> Result<(Vec<bool>, Vec<bool>), String> {
+    let errs = rs.validate();
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
+    let (ctx, _) = context(rs, bars)?;
+    let gated = has_conditions(&rs.exit);
+    let entry = (0..bars.len()).map(|i| eval_group(&rs.entry, &ctx, i)).collect();
+    let exit = (0..bars.len()).map(|i| gated && eval_group(&rs.exit, &ctx, i)).collect();
+    Ok((entry, exit))
+}
+
 /// Evaluate `rs` over `bars`. Only bars `[..closed]` can produce signals (the
 /// forming candle is excluded so signals never repaint). Entry fires only when
 /// flat and Exit only when in a position; with no Exit conditions Entry is not

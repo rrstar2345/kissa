@@ -601,3 +601,15 @@ pub async fn test_server(state: State<'_, SharedState>) -> Res<TestResult> {
         Err(e) => TestResult { ok: false, message: e.to_string() },
     })
 }
+
+// -------------------------------------------------------------- backtest ---
+
+/// Run a saved signal over stored bars of one instrument.
+#[tauri::command]
+pub async fn run_backtest(
+    req: crate::backtest::BacktestRequest,
+    state: State<'_, SharedState>,
+) -> Res<crate::backtest::Report> {
+    state.recorder.flush_now().await;
+    crate::backtest::run(&state.db, &state.config, req).await.map_err(err)
+}
