@@ -8,7 +8,8 @@
   import ChainTable from '$lib/components/ChainTable.svelte';
   import ColumnPicker from '$lib/components/ColumnPicker.svelte';
   import OrderTicket from '$lib/components/OrderTicket.svelte';
-  import type { ChainSnapshot, ChainStatus, ExpiryItem, Source, TicketRequest } from '$lib/types';
+  import PositionsDock from '$lib/components/PositionsDock.svelte';
+  import type { ChainSnapshot, ChainStatus, ExpiryItem, Position, Source, TicketRequest } from '$lib/types';
 
   let source = $state<Source>('nse');
   let symbols = $state<string[]>([]);
@@ -55,7 +56,8 @@
     api.stopChain().catch(() => {});
   });
 
-  async function loadExpiries() {
+  /** `preferDate` (ISO) picks that expiry instead of the nearest one, when the source lists it. */
+  async function loadExpiries(preferDate?: string) {
     const mine = ++token;
     busy = true;
     error = '';
@@ -65,9 +67,13 @@
       const list = await api.listExpiries(source, symbol);
       if (mine !== token) return;
       expiries = list;
-      expiryValue = list[0]?.value ?? '';
+      const wanted = preferDate ? list.find((e) => e.date === preferDate) : undefined;
+      expiryValue = (wanted ?? list[0])?.value ?? '';
       if (!list.length) throw new Error('No expiries returned for this symbol.');
       await start();
+      if (preferDate && !wanted && mine === token) {
+        error = `${source === 'fyers' ? 'Fyers' : 'NSE'} does not list the ${preferDate} expiry for ${symbol}; showing the nearest one.`;
+      }
     } catch (e) {
       if (mine === token) error = String(e);
       await api.stopChain().catch(() => {});
@@ -99,6 +105,28 @@
     await loadExpiries();
   }
 
+  /** Positions dock: switch the chain to the position's underlying and expiry. */
+  async function showPosition(p: Position) {
+    if (busy) return;
+    if (p.symbol !== symbol) {
+      if (!symbols.includes(p.symbol)) {
+        error = `${p.symbol} is not in the F&O symbol list.`;
+        return;
+      }
+      symbol = p.symbol;
+      await setJson('chain.symbol', symbol).catch(() => {});
+      await loadExpiries(p.expiry);
+    } else if (expiry?.date !== p.expiry) {
+      const e = expiries.find((x) => x.date === p.expiry);
+      if (!e) {
+        error = `${source === 'fyers' ? 'Fyers' : 'NSE'} does not list the ${p.expiry} expiry for ${symbol}.`;
+        return;
+      }
+      expiryValue = e.value;
+      await start();
+    }
+  }
+
   const saveColumns = () => setJson('chain.columns', visible).catch(() => {});
   const saveWindow = () => setJson('chain.window', strikeWindow).catch(() => {});
 
@@ -113,7 +141,7 @@
   const marketPreOpen = $derived(sourceStatus?.state === 'preOpen');
 </script>
 
-<div class="flex flex-col gap-4">
+<div class="flex min-h-full flex-col gap-4">
   <!-- controls -->
   <div class="flex flex-wrap items-center gap-3">
     <div class="join">
@@ -221,6 +249,15 @@
       </div>
     </div>
   {/if}
+
+  <!-- Stays at the bottom of the viewport while the chain scrolls. -->
+  <div class="sticky bottom-0 z-10 mt-auto">
+    <PositionsDock
+      onpick={showPosition}
+      isActive={(p) => p.symbol === symbol && p.expiry === expiry?.date}
+      hint="Click a contract to open its underlying and expiry"
+    />
+  </div>
 </div>
 
 <OrderTicket request={ticket} onclose={() => (ticket = null)} />

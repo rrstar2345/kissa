@@ -34,6 +34,8 @@
     list,
     rulesets = [],
     draft = null,
+    focused = false,
+    onfocus,
     onchange,
     onremove
   }: {
@@ -43,6 +45,10 @@
     rulesets?: Ruleset[];
     /** Unsaved ruleset previewed on top (Signals editor). */
     draft?: Ruleset | null;
+    /** Highlights the panel (the Charts page's target for the positions dock). */
+    focused?: boolean;
+    /** Called when the person clicks or tabs into the panel. */
+    onfocus?: () => void;
     onchange: (c: PanelConfig) => void;
     onremove?: () => void;
   } = $props();
@@ -335,7 +341,12 @@
   }
 </script>
 
-<div class="flex min-h-0 flex-col rounded-box border border-base-300 bg-base-100">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="flex min-h-0 flex-col rounded-box border bg-base-100 {focused ? 'border-primary' : 'border-base-300'}"
+  onpointerdowncapture={() => onfocus?.()}
+  onfocusincapture={() => onfocus?.()}
+>
   <div class="flex flex-wrap items-center gap-2 border-b border-base-300 px-2 py-1.5">
     <InstrumentPicker value={config.instrument} {list} onpick={(k) => update({ instrument: k })} />
     <select class="select select-xs w-20" value={config.interval} onchange={(e) => update({ interval: e.currentTarget.value })}>

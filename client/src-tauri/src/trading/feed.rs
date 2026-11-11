@@ -74,10 +74,15 @@ pub fn spawn(state: SharedState) {
 
 async fn needed_targets(state: &SharedState) -> HashSet<Target> {
     let mut set = state.trading.watched_contracts();
+    // Held contracts are always recorded as chart bars, even far from the
+    // money, so clicking a position on the Charts page shows its chart.
+    let mut pinned = HashSet::new();
     if let Ok(positions) = store::open_positions(&state.db, None, &today_ist()).await {
         for p in positions {
+            pinned.insert(option_key(&p.symbol, &p.expiry, p.strike, p.is_call));
             set.insert((p.symbol, p.expiry));
         }
+        state.recorder.set_pinned(pinned);
     }
     set
 }
@@ -169,7 +174,7 @@ async fn start(state: &SharedState, target: &Target) -> Option<Feed> {
                 if let Some(px) = leg.ltp {
                     let key = option_key(&symbol, &expiry, t.strike, is_call);
                     ltp.set(&key, px);
-                    if window {
+                    if window || rec.recorder.is_pinned(&key) {
                         rec.recorder.record(&key, now, px, leg.volume, leg.oi);
                     }
                 }

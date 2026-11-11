@@ -116,16 +116,16 @@ pub fn spawn_nse(
                             ltp.set(&option_key(&symbol, &expiry.date, t.strike, is_call), px);
                         }
                     }
-                    if let Some((lo, hi)) = window {
-                        if t.strike >= lo - 1e-6 && t.strike <= hi + 1e-6 {
-                            let now = market_clock::get_ist_now().timestamp();
-                            for (is_call, leg) in [(true, &t.ce), (false, &t.pe)] {
-                                if let Some(px) = leg.ltp {
-                                    recorder.record(
-                                        &option_key(&symbol, &expiry.date, t.strike, is_call),
-                                        now, px, leg.volume, leg.oi,
-                                    );
-                                }
+                    // Strikes near ATM, plus contracts held in an open position
+                    // (pinned), are stored for charts.
+                    let in_window = window
+                        .map_or(false, |(lo, hi)| t.strike >= lo - 1e-6 && t.strike <= hi + 1e-6);
+                    let now = market_clock::get_ist_now().timestamp();
+                    for (is_call, leg) in [(true, &t.ce), (false, &t.pe)] {
+                        if let Some(px) = leg.ltp {
+                            let key = option_key(&symbol, &expiry.date, t.strike, is_call);
+                            if in_window || recorder.is_pinned(&key) {
+                                recorder.record(&key, now, px, leg.volume, leg.oi);
                             }
                         }
                     }

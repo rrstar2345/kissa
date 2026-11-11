@@ -6,8 +6,8 @@
 use chrono::{DateTime, Datelike, Timelike, Weekday};
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
@@ -37,6 +37,9 @@ pub struct Recorder {
     inner: Mutex<Inner>,
     /// Woken when a bar changes, so the UI emitter sleeps while idle.
     wake: Notify,
+    /// Instrument keys that are always recorded, even outside the ATM window
+    /// (contracts held in an open position, so their chart has bars).
+    pinned: RwLock<HashSet<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -58,7 +61,25 @@ pub fn in_session(ts: i64) -> bool {
 
 impl Recorder {
     pub fn new(pool: SqlitePool) -> Arc<Self> {
-        Arc::new(Self { pool: Some(pool), inner: Mutex::new(Inner::default()), wake: Notify::new() })
+        Arc::new(Self {
+            pool: Some(pool),
+            inner: Mutex::new(Inner::default()),
+            wake: Notify::new(),
+            pinned: RwLock::default(),
+        })
+    }
+
+    /// Replace the set of instrument keys that are recorded regardless of the
+    /// strike window (see `pinned`).
+    pub fn set_pinned(&self, keys: HashSet<String>) {
+        if let Ok(mut p) = self.pinned.write() {
+            *p = keys;
+        }
+    }
+
+    /// True when `instrument` is pinned and must be recorded.
+    pub fn is_pinned(&self, instrument: &str) -> bool {
+        self.pinned.read().map(|p| p.contains(instrument)).unwrap_or(false)
     }
 
     /// Record one observation. `cum_volume` is the day's cumulative traded
@@ -199,7 +220,12 @@ mod tests {
     const OPEN: i64 = 1_793_850_300;
 
     fn rec() -> Recorder {
-        Recorder { pool: None, inner: Mutex::new(Inner::default()), wake: Notify::new() }
+        Recorder {
+            pool: None,
+            inner: Mutex::new(Inner::default()),
+            wake: Notify::new(),
+            pinned: RwLock::default(),
+        }
     }
 
     #[test]
@@ -207,6 +233,17 @@ mod tests {
         assert!(in_session(OPEN));
         assert!(!in_session(OPEN - 1));
         assert!(!in_session(OPEN + 6 * 3600 + 15 * 60)); // 15:30
+    }
+
+    #[test]
+    fn pinned_keys_are_replaced_not_merged() {
+        let r = rec();
+        assert!(!r.is_pinned("OPT:A"));
+        r.set_pinned(HashSet::from(["OPT:A".to_string()]));
+        assert!(r.is_pinned("OPT:A"));
+        r.set_pinned(HashSet::from(["OPT:B".to_string()]));
+        assert!(!r.is_pinned("OPT:A"));
+        assert!(r.is_pinned("OPT:B"));
     }
 
     #[test]
