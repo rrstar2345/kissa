@@ -95,10 +95,12 @@ Stack: Tauri v2 (Rust) + SvelteKit/Svelte 5 + Tailwind v4 + DaisyUI 5 (themes `k
   - Holiday-master fetch/parse (`parse_holidays`, `fetch_holidays`, `is_trading_holiday`) is in place but unused (`allow(dead_code)`). 
   - Known gaps: the pre-open status strings for NSE ('Pre-Open' assumed) and Fyers segment 11 are unverified; special sessions outside 08:30-16:00 (Muhurat) are not covered.
 
-## Roadmap (remaining)
-Confirm scope with the user before starting each. Item numbers are kept from the original list (#1 signals, #2 risk controls, #3 alerts, #4 trade copier, #5 algo trading, #6 backtesting, market status bug fix and #7 screen refresh are done).
+- **Top bar P&L (Roadmap #8 done; frontend only, `pnpm check`/`build` pass, not yet tried in the app by the user)**: `components/TopBarPnl.svelte`, placed next to the index watchlist in `+layout.svelte`.
+  - Pill `P&L ₹±x` = net today across all accounts, same maths as the Dashboard (`getDashboard(null)` + `livePosition` / `liveAccount`, so it follows `quotes`). Refetched on `trading.version`, 30 s safety poll. Click opens a popover with every account (sorted by |net|, scrollable) showing net and realised / unrealised / charges, plus a total row when there is more than one account. Hidden when there are no trading accounts.
+  - `Positions (n)` button links to `/orders?tab=positions`. The Orders page tab is now derived from `?tab=orders|trades|positions` (`page.url`), and tab clicks call `replaceState`, so the link works even when already on Orders.
 
-**8. Today's P&L in the top bar.** Next to the index watchlist in `+layout.svelte`: overall net P&L today and per account (same numbers as the dashboard: realised + unrealised - charges, `net_today`), updating live with quotes, plus a button that opens Orders > Positions. Needs a compact account breakdown (many accounts: show the top few or a hover/popover list).
+## Roadmap (remaining)
+Confirm scope with the user before starting each. Item numbers are kept from the original list (#1 signals, #2 risk controls, #3 alerts, #4 trade copier, #5 algo trading, #6 backtesting, market status bug fix, #7 screen refresh and #8 top bar P&L are done).
 
 **9. Open positions panel on every trading screen.** Exit lives on the Dashboard and Orders pages only. Make one reusable positions panel (with Exit and Exit all, reusing `ExitButton` / `ExitAllButton`) available on Option Chain and Charts too. Clicking a position: (a) Option Chain page switches the chain to that position's underlying and expiry (needs the contract's symbol and expiry, and `start_chain` for the current source); (b) Charts page sets the selected chart panel's instrument to that option key (`optionKey(symbol, expiry, strike, leg)`; the option must be in the streamed ATM +-20 set to have bars, so consider streaming held contracts for the recorder). Decide how the panel is placed (collapsible bottom or side dock) and which Charts panel is "selected".
 

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { every } from '$lib/timers';
   import { onMount } from 'svelte';
+  import { page } from '$app/state';
+  import { replaceState } from '$app/navigation';
   import { api } from '$lib/api';
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
@@ -15,7 +17,13 @@
   let accountId = $state(''); // '' = all
   let date = $state(todayIst());
   let allDates = $state(false);
-  let tab = $state<Tab>('orders');
+  // The tab lives in the URL (`?tab=positions`) so the top bar can deep-link to it.
+  const TABS: Tab[] = ['orders', 'trades', 'positions'];
+  const tab = $derived.by<Tab>(() => {
+    const t = page.url.searchParams.get('tab');
+    return TABS.find((x) => x === t) ?? 'orders';
+  });
+  const setTab = (t: Tab) => replaceState(`?tab=${t}`, page.state);
   let orders = $state.raw<OrderRow[]>([]);
   let trades = $state.raw<TradeRow[]>([]);
   let basePositions = $state.raw<Position[]>([]);
@@ -157,9 +165,9 @@
   {#if notice}<div role="status" class="alert alert-info alert-soft py-2 text-sm">{notice}</div>{/if}
 
   <div role="tablist" class="tabs tabs-border">
-    <button role="tab" class="tab {tab === 'orders' ? 'tab-active' : ''}" onclick={() => (tab = 'orders')}>Orders ({orders.length})</button>
-    <button role="tab" class="tab {tab === 'trades' ? 'tab-active' : ''}" onclick={() => (tab = 'trades')}>Trades ({trades.length})</button>
-    <button role="tab" class="tab {tab === 'positions' ? 'tab-active' : ''}" onclick={() => (tab = 'positions')}>Positions ({positions.length})</button>
+    <button role="tab" class="tab {tab === 'orders' ? 'tab-active' : ''}" onclick={() => setTab('orders')}>Orders ({orders.length})</button>
+    <button role="tab" class="tab {tab === 'trades' ? 'tab-active' : ''}" onclick={() => setTab('trades')}>Trades ({trades.length})</button>
+    <button role="tab" class="tab {tab === 'positions' ? 'tab-active' : ''}" onclick={() => setTab('positions')}>Positions ({positions.length})</button>
   </div>
 
   {#if tab === 'orders'}

@@ -8,6 +8,7 @@
   import { trading } from '$lib/trading.svelte';
   import { num, signed, trend } from '$lib/format';
   import KillSwitch from '$lib/components/KillSwitch.svelte';
+  import TopBarPnl from '$lib/components/TopBarPnl.svelte';
 
   let { children } = $props();
 
@@ -82,6 +83,8 @@
           {/if}
         </div>
       {/each}
+
+      <TopBarPnl />
 
       <div class="ml-auto flex items-center gap-3 text-xs">
         <KillSwitch />
