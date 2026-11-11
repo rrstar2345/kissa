@@ -640,6 +640,8 @@ export interface AlgoLeg {
   lots: number;
   orderId: string;
   entryPrice: number;
+  /** Premium committed by this leg (counts against the capital pool). */
+  cost?: number;
   stop: number | null;
   target: number | null;
   bracket: boolean;

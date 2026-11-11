@@ -191,8 +191,10 @@
         </select>
       </div>
       <p class="mt-2 text-xs text-base-content/60">
-        Evaluated on the underlying's closed bars. Entry opens the position, Exit closes it. Editing the signal on the
-        Signals page changes every algo that uses it.
+        Evaluated on the closed bars of each option leg itself (the CE and/or PE of the strike below), once per bar.
+        Entry opens that leg, Exit closes it. Bars are recorded while the price feed runs, so a signal needs enough
+        history first (the journal says when it is waiting). Editing the signal on the Signals page changes every
+        algo that uses it.
       </p>
       {#if pendingSignal && !algo.signalId}
         <p class="mt-1 text-xs text-info">The signal “{pendingSignal.name}” will be created when you save.</p>
@@ -235,8 +237,9 @@
         </label>
       </div>
       <p class="mt-2 text-xs text-base-content/60">
-        ATM is the strike nearest to the spot at the entry bar; ATM + 1 is one strike above it. The strike is fixed
-        until the position is closed, then the next entry is worked out from the then-current spot.
+        ATM is the strike nearest to the underlying's spot at the bar close; ATM + 1 is one strike above it. With Both,
+        the CE and the PE each wait for their own signal (CE is checked first). A leg's strike is fixed until that leg
+        closes, then the next entry is worked out from the then-current spot.
       </p>
     </section>
 
@@ -244,7 +247,7 @@
       <h2 class="mb-2 text-sm font-semibold">Order</h2>
       <div class="grid grid-cols-2 gap-2">
         <label class="flex flex-col gap-1 text-xs">
-          Capital per account (₹)
+          Capital per account (₹, shared by all legs)
           <input class="input input-sm" type="number" min="0" step="100" bind:value={algo.action.capital} />
         </label>
         <label class="flex flex-col gap-1 text-xs">
@@ -269,8 +272,9 @@
         </label>
       </div>
       <p class="mt-2 text-xs text-base-content/60">
-        BUY LIMIT at last price + buffer. Lots = capital ÷ (price × lot size), rounded down; with Both the capital is
-        split between CE and PE. Whichever comes first closes a leg: the signal's Exit, the stop-loss or the target.
+        BUY LIMIT at last price + buffer. Lots = free capital ÷ (price × lot size), rounded down. The first leg to signal
+        may use all the capital; a later leg gets only what is left and is skipped as insufficient funds if not even one
+        lot fits. Whichever comes first closes a leg: the signal's Exit, the stop-loss or the target.
         Paper accounts get bracket orders; live accounts are watched by the algo while the app runs.
       </p>
     </section>

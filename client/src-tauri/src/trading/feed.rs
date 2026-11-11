@@ -4,9 +4,14 @@
 //! pending paper orders still need prices, so this supervisor starts a
 //! price-only stream for every (symbol, expiry) that has one, unless the
 //! chain page is already streaming it. Streams stop when no longer needed.
+//!
+//! The feed also records the strikes near the money as chart bars (like the
+//! chain page does), so algos can evaluate their signal on an option's own
+//! bars without the Option Chain page being open.
 
 use chrono::NaiveDate;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
@@ -14,13 +19,17 @@ use tracing::debug;
 
 use super::store;
 use super::today_ist;
+use crate::algo::{atm_strike, strike_step};
 use crate::chain::fyers::{self, FyersCreds};
+use crate::chain::runner::find_index;
+use crate::charts::recorder::Recorder;
 use crate::chain::ExpiryItem;
 use crate::charts::instrument::option_key;
 use crate::db;
-use crate::market::events::OptionTick;
+use crate::market::events::{IndexStore, OptionTick};
 use crate::market::market_clock;
 use crate::market::streamers::options;
+use crate::market::symbols;
 use crate::state::SharedState;
 
 /// (symbol, expiry ISO date)
@@ -73,6 +82,48 @@ async fn needed_targets(state: &SharedState) -> HashSet<Target> {
     set
 }
 
+/// Stores option ticks near the money as chart bars: the strikes within
+/// ATM +- `charts.persist_strikes_each_side` steps of the underlying's spot.
+struct Recording {
+    recorder: Arc<Recorder>,
+    indices: IndexStore,
+    index_names: Vec<String>,
+    step: f64,
+    each_side: f64,
+}
+
+impl Recording {
+    async fn new(state: &SharedState, symbol: &str) -> Self {
+        let mut index_names: Vec<String> = state
+            .fno
+            .read()
+            .await
+            .iter()
+            .find(|i| i.symbol == symbol)
+            .map(|i| i.index_names.clone())
+            .unwrap_or_default();
+        index_names.extend(symbols::builtin_index_names(symbol).iter().map(|s| s.to_string()));
+        index_names.push(symbol.to_string());
+        Self {
+            recorder: state.recorder.clone(),
+            indices: state.indices.clone(),
+            index_names,
+            step: strike_step(symbol),
+            each_side: state.config.charts.persist_strikes_each_side as f64,
+        }
+    }
+
+    /// The nearest strike to the underlying's current price (None until it is known).
+    fn atm(&self) -> Option<f64> {
+        let spot = find_index(&self.indices, &self.index_names)?.current_price;
+        (spot > 0.0).then(|| atm_strike(spot, self.step))
+    }
+
+    fn in_window(&self, atm: f64, strike: f64) -> bool {
+        (strike - atm).abs() <= self.each_side * self.step + 1e-6
+    }
+}
+
 async fn stop(feed: Feed, state: &SharedState, remove_stat: bool) {
     for t in &feed.tasks {
         t.abort();
@@ -109,11 +160,18 @@ async fn start(state: &SharedState, target: &Target) -> Option<Feed> {
         state.session.clone(),
     ));
     let ltp = state.ltp.clone();
+    let rec = Recording::new(state, &symbol).await;
     let reader = tokio::spawn(async move {
         while let Some(t) = rx.recv().await {
+            let window = rec.atm().map(|atm| rec.in_window(atm, t.strike)).unwrap_or(false);
+            let now = market_clock::get_ist_now().timestamp();
             for (is_call, leg) in [(true, &t.ce), (false, &t.pe)] {
                 if let Some(px) = leg.ltp {
-                    ltp.set(&option_key(&symbol, &expiry, t.strike, is_call), px);
+                    let key = option_key(&symbol, &expiry, t.strike, is_call);
+                    ltp.set(&key, px);
+                    if window {
+                        rec.recorder.record(&key, now, px, leg.volume, leg.oi);
+                    }
                 }
             }
         }
@@ -123,6 +181,7 @@ async fn start(state: &SharedState, target: &Target) -> Option<Feed> {
 
 async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expiry_iso: String) {
     let cfg = state.config.clone();
+    let rec = Recording::new(&state, &symbol).await;
     let mut epoch: Option<String> = None;
     // Set once the closed-market prices have been fetched: no more API calls
     // until Fyers reports the market open.
@@ -150,10 +209,13 @@ async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expir
                         ok = true;
                         let item = ExpiryItem { value: ep.clone(), label: String::new(), date: expiry_iso.clone() };
                         let snap = fyers::to_snapshot(&data, &symbol, &item, cfg.risk_free_rate);
+                        let now = market_clock::get_ist_now().timestamp();
                         for row in &snap.rows {
                             for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {
                                 if let Some(px) = leg.ltp {
-                                    state.ltp.set(&option_key(&symbol, &expiry_iso, row.strike, is_call), px);
+                                    let key = option_key(&symbol, &expiry_iso, row.strike, is_call);
+                                    state.ltp.set(&key, px);
+                                    rec.recorder.record(&key, now, px, leg.volume, leg.oi);
                                 }
                             }
                         }

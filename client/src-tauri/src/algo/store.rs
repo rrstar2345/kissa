@@ -12,7 +12,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 
-use super::{Algo, AlgoState, JournalRow, Leg, PHASE_FLAT};
+use super::{Algo, AlgoState, JournalRow, Leg};
 
 const JOURNAL_MAX_ROWS: i64 = 5000;
 const JOURNAL_MAX_DAYS: i64 = 60;
@@ -207,7 +207,7 @@ pub async fn set_last_bar(pool: &SqlitePool, id: &str, ts: i64) -> Result<()> {
     Ok(())
 }
 
-/// Record an open position (`phase` in position, with its legs).
+/// Record the open legs (`phase` is in position while any leg is open, flat otherwise).
 pub async fn set_position(pool: &SqlitePool, id: &str, phase: &str, legs: &[Leg], entry_bar_ts: i64) -> Result<()> {
     sqlx::query("UPDATE algo_state SET phase = ?, legs = ?, entry_bar_ts = ?, updated_at = ? WHERE algo_id = ?")
         .bind(phase)
@@ -218,10 +218,6 @@ pub async fn set_position(pool: &SqlitePool, id: &str, phase: &str, legs: &[Leg]
         .execute(pool)
         .await?;
     Ok(())
-}
-
-pub async fn set_flat(pool: &SqlitePool, id: &str) -> Result<()> {
-    set_position(pool, id, PHASE_FLAT, &[], 0).await
 }
 
 // -------------------------------------------------------------- journal ---

@@ -2,13 +2,21 @@
 //! still holds a position):
 //!
 //! 1. Disarm when the kill switch or a daily-loss halt applies to its accounts.
-//! 2. Keep the position in step with the ledger: when every leg is closed
-//!    (exit order, stop-loss, target, or an entry that never filled) the algo
-//!    is flat again and the next scan starts from the then-current spot.
+//! 2. Keep the legs in step with the ledger: a leg whose position is closed
+//!    (exit order, stop-loss, target, or an entry that never filled) is
+//!    dropped; the algo is flat when no leg is left.
 //! 3. Watch the stop-loss / target of legs whose broker has no bracket orders.
-//! 4. On a *new closed bar* of the underlying: cancel unfilled entry orders,
-//!    then `eval::decide` (flat -> Entry, in a position -> Exit). Entry places
-//!    BUY limit orders; Exit closes the legs.
+//! 4. Once per *newly closed bar* (the algo interval, on the session grid),
+//!    for each leg in the order CE, PE: a held leg cancels its unfilled entry
+//!    and checks the signal's Exit on its own option bars; a flat leg (armed
+//!    algos only) resolves ATM + offset from the underlying's spot and checks
+//!    the signal's Entry on that strike's bars. Entries are BUY limit orders
+//!    sized from the account's free capital (pool minus open legs).
+//!
+//! A bar counts only if it exists for the closed interval: an option that did
+//! not trade in it has no bar and no signal. Option bars are recorded by the
+//! price feed (`trading::feed`) or the Option Chain page, and a signal needs
+//! `warmup_bars` of history before it can fire.
 //!
 //! The first look after arming only sets the baseline bar, so a signal that
 //! was already on the chart never trades. Every decision goes to the journal;
@@ -23,8 +31,9 @@ use tauri::{AppHandle, Emitter};
 use tracing::warn;
 
 use super::{
-    atm_strike, bracket_levels, closed_count, entry_limit, interval_secs, lots_for_capital, pick_expiry,
-    select_accounts, strike_step, target_strike, Algo, AlgoState, ExpirySel, Leg, BAR_LIMIT, PHASE_IN,
+    atm_strike, bracket_levels, closed_count, entry_limit, free_capital, interval_secs, last_closed_bucket,
+    lots_for_capital, pick_expiry, select_accounts, strike_step, target_strike, warmup_bars, Algo, AlgoState,
+    ExpirySel, Leg, BAR_LIMIT, PHASE_FLAT, PHASE_IN,
 };
 use super::store;
 use crate::accounts;
@@ -58,6 +67,8 @@ struct Runner {
     last_error: HashMap<String, String>,
     /// Entry order id -> when its stop-loss / target exit was last sent.
     stop_fired: HashMap<String, Instant>,
+    /// `algo:option` pairs already told they are waiting for bar history.
+    warned: HashSet<String>,
     ticks: u64,
 }
 
@@ -70,6 +81,7 @@ pub fn spawn(state: SharedState, app: AppHandle) {
             expiry_failed: HashMap::new(),
             last_error: HashMap::new(),
             stop_fired: HashMap::new(),
+            warned: HashSet::new(),
             ticks: 0,
         };
         let mut tick = tokio::time::interval(Duration::from_secs(TICK_SECS));
@@ -291,71 +303,171 @@ impl Runner {
             watch.insert((l.symbol.clone(), l.expiry.clone()));
         }
 
-        // 2 + 3. Position bookkeeping and software stop-loss / target.
+        // 2 + 3. Keep the legs in step with the ledger; watch software stop-loss / target.
         if st.in_position() {
-            if self.sync_position(algo, &st).await? {
-                return Ok(());
+            self.sync_legs(algo, &mut st).await?;
+            if st.in_position() {
+                self.watch_stops(algo, &st).await;
             }
-            self.watch_stops(algo, &st).await;
+        }
+        if !st.armed && !st.in_position() {
+            return Ok(());
         }
 
-        // 4. The signal, on a new closed bar of the underlying.
+        // 4. The signal, once per newly closed bar, on every leg's own option bars.
         let rs = signals
             .iter()
             .find(|r| r.id == algo.signal_id)
             .ok_or_else(|| anyhow!("The signal this algo uses no longer exists"))?;
         let iv = resample::parse_interval(&algo.interval).ok_or_else(|| anyhow!("Invalid interval {}", algo.interval))?;
         let secs = interval_secs(&algo.interval).ok_or_else(|| anyhow!("Invalid interval {}", algo.interval))?;
-        self.state.recorder.flush_now().await;
-        let bars = self.underlying_bars(algo, iv).await?;
-        let closed = closed_count(&bars, secs, Utc::now().timestamp());
-        if closed == 0 {
-            return Ok(());
-        }
-        let bar_ts = bars[closed - 1].ts;
+        let bucket = last_closed_bucket(market_clock::get_ist_now().timestamp(), iv)
+            .ok_or_else(|| anyhow!("Invalid interval {}", algo.interval))?;
         if st.last_bar_ts == 0 {
-            store::set_last_bar(&pool, &algo.id, bar_ts).await?;
+            store::set_last_bar(&pool, &algo.id, bucket).await?;
             return Ok(());
         }
-        if bar_ts <= st.last_bar_ts {
+        if bucket <= st.last_bar_ts {
             return Ok(());
         }
         // Consume the bar first: a failure below is journaled once, not retried every tick.
-        store::set_last_bar(&pool, &algo.id, bar_ts).await?;
+        store::set_last_bar(&pool, &algo.id, bucket).await?;
+        self.state.recorder.flush_now().await;
 
-        let in_pos = st.in_position();
-        let decision = eval::decide(rs, &bars, closed, in_pos).map_err(|e| anyhow!("Signal error: {e}"))?;
-        if in_pos {
-            self.cancel_unfilled(algo, &st).await;
-            if decision == Some(Decision::Exit) {
-                self.log(algo, "info", "signal", &format!("Exit signal on the {} bar of {} ({}).", algo.interval, hhmm(bar_ts), rs.name))
-                    .await;
-                self.close_legs(algo, &st, "exit signal").await;
+        // CE before PE. A leg still held after the side was changed is managed (exit) too.
+        let side_legs = algo.instrument.side.legs();
+        let mut order = side_legs.clone();
+        for l in &st.legs {
+            if !order.contains(&l.is_call) {
+                order.push(l.is_call);
             }
-        } else if st.armed && decision == Some(Decision::Entry) {
-            let spot = bars[closed - 1].close;
-            self.enter(algo, spot, bar_ts, &rs.name).await?;
+        }
+        // Spot and expiry for entries: looked up once, and only when a leg is flat.
+        let mut ctx: Option<(f64, String)> = None;
+        let mut ctx_failed = false;
+        let symbol = algo.instrument.underlying.clone();
+        let step = strike_step(&symbol);
+
+        for is_call in order {
+            let ce_pe = if is_call { "CE" } else { "PE" };
+            let held: Vec<Leg> = st.legs.iter().filter(|l| l.is_call == is_call).cloned().collect();
+            if !held.is_empty() {
+                self.cancel_unfilled(algo, &held).await;
+                let label = leg_label(&held[0]);
+                let d = self.leg_decision(algo, rs, &held[0].instrument, &label, iv, secs, bucket, true).await?;
+                if d == Some(Decision::Exit) {
+                    self.log(algo, "info", "signal", &format!("Exit signal on the {} bar of {} ({}) for {label}.", algo.interval, hhmm(bucket), rs.name))
+                        .await;
+                    self.close_legs(algo, &held, "exit signal").await;
+                }
+                continue;
+            }
+            if !st.armed || !side_legs.contains(&is_call) {
+                continue;
+            }
+            if ctx.is_none() && !ctx_failed {
+                match self.entry_context(algo, iv, secs).await {
+                    Ok(c) => ctx = Some(c),
+                    Err(e) => {
+                        ctx_failed = true;
+                        self.log(algo, "error", "error", &e.to_string()).await;
+                    }
+                }
+            }
+            let Some((spot, expiry)) = ctx.clone() else { continue };
+            let strike = target_strike(spot, step, algo.instrument.strike_offset);
+            if strike <= 0.0 {
+                self.log(algo, "error", "error", &format!("Could not work out a strike from the spot {spot:.2}")).await;
+                continue;
+            }
+            let key = option_key(&symbol, &expiry, strike, is_call);
+            let label = format!("{symbol} {strike:.0} {ce_pe} {expiry}");
+            let d = self.leg_decision(algo, rs, &key, &label, iv, secs, bucket, false).await?;
+            if d == Some(Decision::Entry) {
+                self.enter_leg(algo, &mut st, is_call, strike, &expiry, spot, bucket, &rs.name).await?;
+            }
         }
         Ok(())
     }
 
+    /// Spot (last closed bar of the underlying) and expiry for entries.
+    async fn entry_context(&mut self, algo: &Algo, iv: Interval, secs: i64) -> Result<(f64, String)> {
+        let expiry = self.expiry_for(algo).await?;
+        let bars = self.underlying_bars(algo, iv).await?;
+        let closed = closed_count(&bars, secs, market_clock::get_ist_now().timestamp());
+        if closed == 0 {
+            return Err(anyhow!("No closed {} bar of {} yet, so no strike can be chosen", algo.interval, algo.instrument.underlying));
+        }
+        Ok((bars[closed - 1].close, expiry))
+    }
+
+    /// The signal's decision for one option on the bar that just closed.
+    /// `None` while the option has too little history or no bar for that interval.
+    #[allow(clippy::too_many_arguments)]
+    async fn leg_decision(
+        &mut self,
+        algo: &Algo,
+        rs: &Ruleset,
+        key: &str,
+        label: &str,
+        iv: Interval,
+        secs: i64,
+        bucket: i64,
+        in_pos: bool,
+    ) -> Result<Option<Decision>> {
+        let bars = chart_store::chart_bars(&self.state.db, key, iv, BAR_LIMIT).await?;
+        let closed = closed_count(&bars, secs, market_clock::get_ist_now().timestamp());
+        let need = warmup_bars(rs);
+        let wkey = format!("{}:{key}", algo.id);
+        if closed < need {
+            if self.warned.insert(wkey) {
+                self.log(
+                    algo,
+                    "warn",
+                    "skip",
+                    &format!(
+                        "{label}: {closed} closed {} bar(s) stored, the signal needs about {need} before it can fire. Bars are recorded while the price feed runs; waiting for history.",
+                        algo.interval
+                    ),
+                )
+                .await;
+            }
+            return Ok(None);
+        }
+        self.warned.remove(&wkey);
+        // No bar for the closed interval (the option did not trade): nothing to decide on.
+        if closed == 0 || bars[closed - 1].ts != bucket {
+            return Ok(None);
+        }
+        eval::decide(rs, &bars, closed, in_pos).map_err(|e| anyhow!("Signal error: {e}"))
+    }
+
     // -------------------------------------------------------------- entry ---
 
-    async fn enter(&mut self, algo: &Algo, spot: f64, bar_ts: i64, signal_name: &str) -> Result<()> {
+    /// BUY one leg (CE or PE) on every account that trades for this algo,
+    /// each sized from its own free capital.
+    #[allow(clippy::too_many_arguments)]
+    async fn enter_leg(
+        &mut self,
+        algo: &Algo,
+        st: &mut AlgoState,
+        is_call: bool,
+        strike: f64,
+        expiry: &str,
+        spot: f64,
+        bar_ts: i64,
+        signal_name: &str,
+    ) -> Result<()> {
         let pool = self.state.db.clone();
         let symbol = algo.instrument.underlying.clone();
-        let expiry = self.expiry_for(algo).await?;
         let step = strike_step(&symbol);
-        let strike = target_strike(spot, step, algo.instrument.strike_offset);
-        if strike <= 0.0 {
-            return Err(anyhow!("Could not work out a strike from the spot {spot:.2}"));
-        }
+        let ce_pe = if is_call { "CE" } else { "PE" };
         self.log(
             algo,
             "info",
             "signal",
             &format!(
-                "Entry signal on the {} bar of {} ({signal_name}): spot {spot:.2}, ATM {:.0}, {} = {strike:.0}, expiry {expiry}.",
+                "Entry signal on the {} bar of {} ({signal_name}) for {symbol} {strike:.0} {ce_pe} {expiry}: spot {spot:.2}, ATM {:.0}, {} = {strike:.0}.",
                 algo.interval,
                 hhmm(bar_ts),
                 atm_strike(spot, step),
@@ -372,144 +484,156 @@ impl Runner {
             self.log(algo, "info", "skip", &format!("{c} is not traded directly: its master {m} places the orders and the trade copier replicates them.")).await;
         }
 
-        let sides = algo.instrument.side.legs();
-        let per_leg = algo.action.capital / sides.len() as f64;
-        let mut legs: Vec<Leg> = Vec::new();
+        let mut placed: Vec<Leg> = Vec::new();
         let mut summary: Vec<String> = Vec::new();
         let mut failures = 0usize;
 
-        for is_call in sides {
-            let ce_pe = if is_call { "CE" } else { "PE" };
-            let key = option_key(&symbol, &expiry, strike, is_call);
-            let Some(q) = self.state.ltp.get(&key) else {
-                self.log(algo, "warn", "skip", &format!("No live price for {symbol} {strike:.0} {ce_pe} {expiry}: the option price feed is not running for it yet. Leg skipped.")).await;
-                failures += 1;
-                continue;
-            };
-            let age = market_clock::get_ist_now().timestamp() - q.at;
-            if age > MAX_PRICE_AGE_SECS {
-                self.log(algo, "warn", "skip", &format!("The last price of {symbol} {strike:.0} {ce_pe} is {age}s old. Leg skipped.")).await;
-                failures += 1;
-                continue;
+        let key = option_key(&symbol, expiry, strike, is_call);
+        let Some(q) = self.state.ltp.get(&key) else {
+            self.log(algo, "warn", "skip", &format!("No live price for {symbol} {strike:.0} {ce_pe} {expiry}: the option price feed is not running for it yet. Leg skipped.")).await;
+            return Ok(());
+        };
+        let age = market_clock::get_ist_now().timestamp() - q.at;
+        if age > MAX_PRICE_AGE_SECS {
+            self.log(algo, "warn", "skip", &format!("The last price of {symbol} {strike:.0} {ce_pe} is {age}s old. Leg skipped.")).await;
+            return Ok(());
+        }
+        let lot_size = match self.state.trading.contract_info(&symbol, expiry, strike, is_call).await {
+            Ok(i) => i.lot_size,
+            Err(e) => {
+                self.log(algo, "error", "error", &format!("Contract lookup failed for {symbol} {strike:.0} {ce_pe}: {e}")).await;
+                return Ok(());
             }
-            let lot_size = match self.state.trading.contract_info(&symbol, &expiry, strike, is_call).await {
-                Ok(i) => i.lot_size,
-                Err(e) => {
-                    self.log(algo, "error", "error", &format!("Contract lookup failed for {symbol} {strike:.0} {ce_pe}: {e}")).await;
-                    failures += 1;
-                    continue;
-                }
-            };
-            let Some(lot_size) = lot_size else {
-                self.log(algo, "error", "error", &format!("Lot size of {symbol} is unknown. Refresh the instrument list or set trading.fallback_lot_sizes in settings.json.")).await;
-                failures += 1;
-                continue;
-            };
-            let price = entry_limit(q.ltp, algo.action.buffer_ticks);
-            let lots = lots_for_capital(per_leg, price, lot_size).min(MAX_LOTS);
-            if lots < 1 {
-                self.log(algo, "warn", "skip", &format!("Capital ₹{per_leg:.0} per leg is below the cost of one lot of {symbol} {strike:.0} {ce_pe} (₹{:.0} = {price:.2} x {lot_size}). Leg skipped.", price * lot_size as f64)).await;
-                failures += 1;
-                continue;
-            }
-            let (stop, target) = bracket_levels(price, algo.action.stop_loss_pct, algo.action.target_pct);
+        };
+        let Some(lot_size) = lot_size else {
+            self.log(algo, "error", "error", &format!("Lot size of {symbol} is unknown. Refresh the instrument list or set trading.fallback_lot_sizes in settings.json.")).await;
+            return Ok(());
+        };
+        let price = entry_limit(q.ltp, algo.action.buffer_ticks);
+        let one_lot = price * lot_size as f64;
+        let (stop, target) = bracket_levels(price, algo.action.stop_loss_pct, algo.action.target_pct);
 
-            for acct_id in &sel.run {
-                let acct = match accounts::get(&pool, acct_id).await {
-                    Ok(a) => a,
-                    Err(_) => {
-                        self.log(algo, "warn", "skip", "An account of this algo no longer exists. Skipped.").await;
-                        continue;
-                    }
+        for acct_id in &sel.run {
+            let acct = match accounts::get(&pool, acct_id).await {
+                Ok(a) => a,
+                Err(_) => {
+                    self.log(algo, "warn", "skip", "An account of this algo no longer exists. Skipped.").await;
+                    continue;
+                }
+            };
+            if acct.kind != "paper" && acct.kind != "dhan" {
+                continue;
+            }
+            if acct.kind == "dhan" && !algo.allow_live {
+                self.log(algo, "warn", "skip", &format!("{} is a live account and this algo is not allowed to trade live. Skipped.", acct.name)).await;
+                continue;
+            }
+            if let Some(reason) = self.state.trading.halt_reason(acct_id).await {
+                self.log(algo, "warn", "skip", &format!("{} is halted ({reason}). Skipped.", acct.name)).await;
+                continue;
+            }
+            // Capital is one pool per account: what the open legs committed is not free.
+            let committed: f64 = st.legs.iter().filter(|l| l.account_id == *acct_id).map(|l| l.cost).sum();
+            let free = free_capital(algo.action.capital, committed);
+            let lots = lots_for_capital(free, price, lot_size).min(MAX_LOTS);
+            if lots < 1 {
+                let msg = if committed > 0.0 {
+                    format!(
+                        "Insufficient funds on {}: ₹{free:.0} free of ₹{:.0} (₹{committed:.0} is in open legs), one lot of {symbol} {strike:.0} {ce_pe} costs ₹{one_lot:.0} ({price:.2} x {lot_size}). Leg skipped.",
+                        acct.name, algo.action.capital
+                    )
+                } else {
+                    format!(
+                        "Capital ₹{:.0} is below the cost of one lot of {symbol} {strike:.0} {ce_pe} (₹{one_lot:.0} = {price:.2} x {lot_size}). Leg skipped.",
+                        algo.action.capital
+                    )
                 };
-                if acct.kind != "paper" && acct.kind != "dhan" {
-                    continue;
+                self.log(algo, "warn", "skip", &msg).await;
+                failures += 1;
+                continue;
+            }
+            let paper = acct.kind == "paper";
+            let bracket = (paper && (stop.is_some() || target.is_some()))
+                .then(|| BracketInput { target, stop_trigger: stop, stop_price: None });
+            let input = PlaceOrderInput {
+                account_id: acct_id.clone(),
+                symbol: symbol.clone(),
+                expiry: expiry.to_string(),
+                strike,
+                is_call,
+                side: "BUY".into(),
+                product: algo.action.product.clone(),
+                order_type: "LIMIT".into(),
+                validity: "DAY".into(),
+                lots,
+                price,
+                trigger_price: None,
+                bracket: bracket.clone(),
+            };
+            match self.state.trading.place_algo(input, algo.copier).await {
+                Ok(o) if o.status == "REJECTED" => {
+                    failures += 1;
+                    self.log(algo, "error", "entry", &format!("BUY {lots} lot(s) {symbol} {strike:.0} {ce_pe} @ {price:.2} on {} was rejected: {}", acct.name, o.message)).await;
                 }
-                if acct.kind == "dhan" && !algo.allow_live {
-                    self.log(algo, "warn", "skip", &format!("{} is a live account and this algo is not allowed to trade live. Skipped.", acct.name)).await;
-                    continue;
+                Ok(o) => {
+                    self.log(algo, "info", "entry", &format!("BUY {lots} lot(s) {symbol} {strike:.0} {ce_pe} {expiry} @ {price:.2} on {} ({}){}.", acct.name, o.status, sl_tp_note(paper, stop, target))).await;
+                    summary.push(format!("{} BUY {lots} x {symbol} {strike:.0} {ce_pe} @ {price:.2}", acct.name));
+                    let leg = Leg {
+                        account_id: acct_id.clone(),
+                        instrument: key.clone(),
+                        symbol: symbol.clone(),
+                        expiry: expiry.to_string(),
+                        strike,
+                        is_call,
+                        product: algo.action.product.clone(),
+                        lots,
+                        order_id: o.id,
+                        entry_price: price,
+                        cost: price * lot_size as f64 * lots as f64,
+                        stop: if paper { None } else { stop },
+                        target: if paper { None } else { target },
+                        bracket: bracket.is_some(),
+                        propagate: algo.copier,
+                    };
+                    st.legs.push(leg.clone());
+                    placed.push(leg);
                 }
-                if let Some(reason) = self.state.trading.halt_reason(acct_id).await {
-                    self.log(algo, "warn", "skip", &format!("{} is halted ({reason}). Skipped.", acct.name)).await;
-                    continue;
-                }
-                let paper = acct.kind == "paper";
-                let bracket = (paper && (stop.is_some() || target.is_some()))
-                    .then(|| BracketInput { target, stop_trigger: stop, stop_price: None });
-                let input = PlaceOrderInput {
-                    account_id: acct_id.clone(),
-                    symbol: symbol.clone(),
-                    expiry: expiry.clone(),
-                    strike,
-                    is_call,
-                    side: "BUY".into(),
-                    product: algo.action.product.clone(),
-                    order_type: "LIMIT".into(),
-                    validity: "DAY".into(),
-                    lots,
-                    price,
-                    trigger_price: None,
-                    bracket: bracket.clone(),
-                };
-                match self.state.trading.place_algo(input, algo.copier).await {
-                    Ok(o) if o.status == "REJECTED" => {
-                        failures += 1;
-                        self.log(algo, "error", "entry", &format!("BUY {lots} lot(s) {symbol} {strike:.0} {ce_pe} @ {price:.2} on {} was rejected: {}", acct.name, o.message)).await;
-                    }
-                    Ok(o) => {
-                        self.log(algo, "info", "entry", &format!("BUY {lots} lot(s) {symbol} {strike:.0} {ce_pe} {expiry} @ {price:.2} on {} ({}){}.", acct.name, o.status, sl_tp_note(paper, stop, target))).await;
-                        summary.push(format!("{} BUY {lots} x {symbol} {strike:.0} {ce_pe} @ {price:.2}", acct.name));
-                        legs.push(Leg {
-                            account_id: acct_id.clone(),
-                            instrument: key.clone(),
-                            symbol: symbol.clone(),
-                            expiry: expiry.clone(),
-                            strike,
-                            is_call,
-                            product: algo.action.product.clone(),
-                            lots,
-                            order_id: o.id,
-                            entry_price: price,
-                            stop: if paper { None } else { stop },
-                            target: if paper { None } else { target },
-                            bracket: bracket.is_some(),
-                            propagate: algo.copier,
-                        });
-                    }
-                    Err(e) => {
-                        failures += 1;
-                        self.log(algo, "error", "error", &format!("Could not place BUY {lots} lot(s) {symbol} {strike:.0} {ce_pe} on {}: {e}", acct.name)).await;
-                    }
+                Err(e) => {
+                    failures += 1;
+                    self.log(algo, "error", "error", &format!("Could not place BUY {lots} lot(s) {symbol} {strike:.0} {ce_pe} on {}: {e}", acct.name)).await;
                 }
             }
         }
 
-        if legs.is_empty() {
+        if placed.is_empty() {
             self.notify(
-                format!("{}:entry-failed:{bar_ts}", algo.id),
+                format!("{}:entry-failed:{bar_ts}:{ce_pe}", algo.id),
                 format!("Algo could not enter: {}", algo.name),
-                format!("The entry signal fired but no order was placed ({failures} problem(s)). See the algo's journal."),
+                format!("The {ce_pe} entry signal fired but no order was placed ({failures} problem(s)). See the algo's journal."),
             );
             return Ok(());
         }
-        store::set_position(&pool, &algo.id, PHASE_IN, &legs, bar_ts).await?;
+        st.phase = PHASE_IN.to_string();
+        st.entry_bar_ts = bar_ts;
+        store::set_position(&pool, &algo.id, PHASE_IN, &st.legs, bar_ts).await?;
         self.notify(
-            format!("{}:entry:{bar_ts}", algo.id),
+            format!("{}:entry:{bar_ts}:{ce_pe}", algo.id),
             format!("Algo entered: {}", algo.name),
-            format!("{}\n{}", summary.join("\n"), if failures > 0 { format!("{failures} leg(s)/account(s) skipped or failed.") } else { String::new() }),
+            format!("{}\n{}", summary.join("\n"), if failures > 0 { format!("{failures} account(s) skipped or failed.") } else { String::new() }),
         );
         Ok(())
     }
 
     // ----------------------------------------------------------- position ---
 
-    /// True when the algo has just gone flat (every leg closed or never filled).
-    async fn sync_position(&self, algo: &Algo, st: &AlgoState) -> Result<bool> {
+    /// Drop the legs whose position is closed (exit order, stop-loss, target,
+    /// or an entry that never filled). The algo is flat when none is left.
+    async fn sync_legs(&self, algo: &Algo, st: &mut AlgoState) -> Result<()> {
         let pool = &self.state.db;
         let today = today_ist();
         let mut held_by_account: HashMap<String, Vec<crate::trading::store::OpenPos>> = HashMap::new();
-        let mut alive = false;
-        let mut notes: Vec<String> = Vec::new();
+        let mut keep: Vec<Leg> = Vec::new();
+        let mut closed: Vec<(Leg, String)> = Vec::new();
         for leg in &st.legs {
             if !held_by_account.contains_key(&leg.account_id) {
                 let pos = trade_store::open_positions(pool, Some(&leg.account_id), &today).await?;
@@ -521,27 +645,46 @@ impl Runner {
             let order = trade_store::get_order(pool, &leg.order_id).await?;
             let open = order.as_ref().map(|o| is_open_status(&o.status)).unwrap_or(false);
             if held || open {
-                alive = true;
-            } else if let Some(o) = order {
-                if o.filled_qty == 0 {
-                    notes.push(format!("{}: the entry order was {} and nothing was bought", leg_label(leg), o.status));
-                }
+                keep.push(leg.clone());
+            } else {
+                let note = match order {
+                    Some(o) if o.filled_qty == 0 => format!(" (the entry order was {} and nothing was bought)", o.status),
+                    _ => String::new(),
+                };
+                closed.push((leg.clone(), note));
             }
         }
-        if alive {
-            return Ok(false);
+        if closed.is_empty() {
+            return Ok(());
         }
-        store::set_flat(pool, &algo.id).await?;
-        let detail = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
-        self.log(algo, "info", "exit", &format!("Position closed{detail}. Scanning for the next entry from the next bar.")).await;
-        if notes.is_empty() {
+        let flat = keep.is_empty();
+        let phase = if flat { PHASE_FLAT } else { PHASE_IN };
+        store::set_position(pool, &algo.id, phase, &keep, if flat { 0 } else { st.entry_bar_ts }).await?;
+        let first_order = closed[0].0.order_id.clone();
+        let mut filled: Vec<String> = Vec::new();
+        for (leg, note) in &closed {
+            let acct = self.acct_name(&leg.account_id).await;
+            self.log(algo, "info", "exit", &format!("Leg closed: {} on {acct}{note}.", leg_label(leg))).await;
+            if note.is_empty() {
+                filled.push(format!("{} on {acct}", leg_label(leg)));
+            }
+        }
+        if flat {
+            self.log(algo, "info", "exit", "Position closed. Scanning for the next entry from the next bar.").await;
+        }
+        if !filled.is_empty() {
             self.notify(
-                format!("{}:closed:{}", algo.id, st.entry_bar_ts),
-                format!("Algo position closed: {}", algo.name),
-                "Every leg is closed (exit signal, stop-loss or target). See Orders / Trades for the P&L.".into(),
+                format!("{}:closed:{first_order}", algo.id),
+                format!("Algo leg closed: {}", algo.name),
+                format!("{} (exit signal, stop-loss or target). See Orders / Trades for the P&L.", filled.join("; ")),
             );
         }
-        Ok(true)
+        st.legs = keep;
+        st.phase = phase.to_string();
+        if flat {
+            st.entry_bar_ts = 0;
+        }
+        Ok(())
     }
 
     /// Stop-loss / target of legs the broker does not hold (live accounts).
@@ -565,8 +708,8 @@ impl Runner {
 
     /// Cancel entry orders that are still unfilled when the next bar closes
     /// (a stale limit order must not fill later at a price the signal no longer wants).
-    async fn cancel_unfilled(&self, algo: &Algo, st: &AlgoState) {
-        for leg in &st.legs {
+    async fn cancel_unfilled(&self, algo: &Algo, legs: &[Leg]) {
+        for leg in legs {
             let Ok(Some(o)) = trade_store::get_order(&self.state.db, &leg.order_id).await else { continue };
             if is_open_status(&o.status) && o.filled_qty == 0 {
                 match self.state.trading.cancel(&o.id).await {
@@ -577,16 +720,16 @@ impl Runner {
         }
     }
 
-    async fn close_legs(&mut self, algo: &Algo, st: &AlgoState, reason: &str) {
+    async fn close_legs(&mut self, algo: &Algo, legs: &[Leg], reason: &str) {
         let mut sent = 0;
-        for leg in &st.legs {
+        for leg in legs {
             if self.close_leg(algo, leg, reason).await {
                 sent += 1;
             }
         }
         if sent > 0 {
             self.notify(
-                format!("{}:exit:{}", algo.id, Utc::now().timestamp() / 60),
+                format!("{}:exit:{}:{}", algo.id, legs.first().map(|l| l.instrument.as_str()).unwrap_or(""), Utc::now().timestamp() / 60),
                 format!("Algo exiting: {}", algo.name),
                 format!("{sent} exit order(s) placed ({reason})."),
             );

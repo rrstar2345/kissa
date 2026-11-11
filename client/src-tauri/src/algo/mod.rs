@@ -4,13 +4,18 @@
 //!   (ruleset, `signal_id`); a signal can serve many algos and an account
 //!   many algos. Signals are loaded by id on every evaluation, so editing a
 //!   signal changes every algo that uses it. A signal in use cannot be deleted.
-//! * The signal is evaluated on the *underlying's* bars (e.g. `IDX:NIFTY 50`)
-//!   at every bar close (`runner`). Flat + Entry: the strike is resolved from
-//!   the spot at that bar (ATM = nearest strike, ATM+n = n steps up) and held
-//!   fixed until the position is closed; BUY orders go to the CE, PE or both.
-//!   Exit (signal, stop-loss or target, whichever comes first) closes it, and
-//!   the next scan starts again from the then-current spot.
-//! * Capital decides the lots: `floor(capital per leg / (limit price x lot size))`.
+//! * The signal is evaluated on each *option leg's own bars* at the algo
+//!   interval (`runner`): `ce` watches the CE of the target strike, `pe` the
+//!   PE, `both` watches both (CE first on a bar). The target strike is ATM +
+//!   offset from the underlying's spot at the bar close; once a leg has
+//!   entered, its strike is fixed until that leg closes. Each leg has its own
+//!   position: it exits on its own Exit signal, stop-loss or target, and the
+//!   algo is flat when no leg is open.
+//! * Capital is one pool per account: a leg buys
+//!   `floor((capital - premium already committed) / (limit price x lot size))`
+//!   lots; when not even one lot fits the leg is skipped (insufficient funds).
+//! * Option bars exist only while a price feed records them (see
+//!   `trading::feed`), so a signal needs `warmup_bars` of history first.
 //! * Accounts: any number, with a trade-copier switch (see `select_accounts`).
 //! * This module is pure (model, validation, maths); `store` and `runner` do
 //!   the I/O. Every decision is written to the journal.
@@ -23,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::charts::resample::{self, Interval};
+use crate::charts::rules::Ruleset;
 use crate::charts::Bar;
 use crate::trading::copier::CopierConfig;
 use crate::trading::pricing::{round_to_tick, TICK};
@@ -112,8 +118,8 @@ impl Default for InstrumentRule {
 pub struct Action {
     /// INTRADAY | MARGIN
     pub product: String,
-    /// Rupees the algo may commit per account. With `Both` it is split
-    /// equally between the CE and the PE leg.
+    /// Rupees the algo may commit per account, shared by all its open legs:
+    /// the first leg to signal may use all of it, the next one only what is left.
     pub capital: f64,
     /// Entry LIMIT = last price + this many ticks (0.05 each).
     pub buffer_ticks: u32,
@@ -179,6 +185,11 @@ pub struct Leg {
     pub order_id: String,
     /// Entry limit price.
     pub entry_price: f64,
+    /// Premium committed by this leg (entry price x lot size x lots). Counts
+    /// against the account's capital while the leg is open. 0 on legs saved
+    /// before capital was pooled.
+    #[serde(default)]
+    pub cost: f64,
     /// Stop-loss / target watched by the algo itself (accounts whose broker
     /// has no bracket orders). Paper accounts use bracket legs instead.
     #[serde(default)]
@@ -371,6 +382,37 @@ pub fn lots_for_capital(capital: f64, price: f64, lot_size: i64) -> i64 {
     ((capital / cost) + 1e-9).floor() as i64
 }
 
+/// Capital still free on an account: the pool minus what open legs committed.
+pub fn free_capital(capital: f64, committed: f64) -> f64 {
+    if !(capital.is_finite() && committed.is_finite()) {
+        return 0.0;
+    }
+    (capital - committed).max(0.0)
+}
+
+/// Start of the last bar that has fully closed at `now` (epoch seconds), on
+/// the same session-aligned grid the stored bars use.
+pub fn last_closed_bucket(now: i64, iv: Interval) -> Option<i64> {
+    match iv {
+        Interval::Min(n) => Some(resample::bucket_start(now, iv) - n * 60),
+        Interval::Day => None,
+    }
+}
+
+/// Bars a signal needs before it can say anything: the longest lookback of
+/// every variable added up (variables can chain), plus two bars for a cross.
+pub fn warmup_bars(rs: &Ruleset) -> usize {
+    let sum: usize = rs
+        .vars
+        .iter()
+        .map(|v| {
+            let macd = v.slow.unwrap_or(0) + v.signal.unwrap_or(0);
+            v.length.unwrap_or(0).max(v.fast.unwrap_or(0)).max(macd)
+        })
+        .sum();
+    sum + 2
+}
+
 /// Stop-loss trigger and target prices for a BUY at `entry`, on the tick
 /// grid and always on the right side of the entry price. `None` = not set
 /// (or no valid price exists, e.g. a stop below one tick).
@@ -495,6 +537,41 @@ mod tests {
         // Expiry day itself still counts as the current expiry.
         assert_eq!(pick_expiry(ExpirySel::Current, &e, "2026-11-10").as_deref(), Some("2026-11-10"));
         assert_eq!(pick_expiry(ExpirySel::Next3, &e[..2], "2026-11-09"), None);
+    }
+
+    #[test]
+    fn pooled_capital_leaves_what_open_legs_use() {
+        assert_eq!(free_capital(30_000.0, 0.0), 30_000.0);
+        assert_eq!(free_capital(30_000.0, 16_880.0), 13_120.0);
+        assert_eq!(free_capital(30_000.0, 40_000.0), 0.0);
+        assert_eq!(free_capital(f64::NAN, 0.0), 0.0);
+        // The reported case: one CE lot (16,880) leaves too little for a PE lot (13,715).
+        assert_eq!(lots_for_capital(free_capital(30_000.0, 16_880.0), 211.0, 65), 0);
+        // The first leg may use the whole pool.
+        assert_eq!(lots_for_capital(free_capital(30_000.0, 0.0), 259.70, 65), 1);
+        assert_eq!(lots_for_capital(free_capital(60_000.0, 0.0), 259.70, 65), 3);
+    }
+
+    #[test]
+    fn last_closed_bucket_is_the_bar_before_the_forming_one() {
+        // 2026-11-05 (Thursday) 09:15 IST.
+        const OPEN: i64 = 1_793_850_300;
+        let iv = Interval::Min(3);
+        assert_eq!(last_closed_bucket(OPEN + 3 * 60 + 5, iv), Some(OPEN));
+        assert_eq!(last_closed_bucket(OPEN + 6 * 60 - 1, iv), Some(OPEN));
+        assert_eq!(last_closed_bucket(OPEN + 6 * 60, iv), Some(OPEN + 180));
+        assert_eq!(last_closed_bucket(OPEN, Interval::Day), None);
+    }
+
+    #[test]
+    fn warmup_adds_up_chained_lookbacks() {
+        use crate::charts::rules::Var;
+        let var = |kind: &str, length: Option<usize>| Var { id: kind.into(), kind: kind.into(), length, ..Var::default() };
+        let rs = Ruleset { vars: vec![var("rsi", Some(14)), var("ema", Some(9))], ..Ruleset::default() };
+        assert_eq!(warmup_bars(&rs), 25);
+        let macd = Var { slow: Some(26), signal: Some(9), fast: Some(12), ..var("macd", None) };
+        assert_eq!(warmup_bars(&Ruleset { vars: vec![macd], ..Ruleset::default() }), 37);
+        assert_eq!(warmup_bars(&Ruleset::default()), 2);
     }
 
     #[test]
