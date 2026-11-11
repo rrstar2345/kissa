@@ -2,11 +2,13 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import AccountForm from '$lib/components/AccountForm.svelte';
+  import FyersLogin from '$lib/components/FyersLogin.svelte';
   import type { Account, AccountKind, Source, TestResult } from '$lib/types';
 
   let accounts = $state<Account[]>([]);
   let loadError = $state('');
   let editing = $state<{ kind: AccountKind; account: Account | null } | null>(null);
+  let loggingIn = $state<Account | null>(null);
   let results = $state<Record<string, TestResult | 'testing'>>({});
   let source = $state<Source>('nse');
   let fyersId = $state('');
@@ -57,6 +59,14 @@
   async function saved() {
     editing = null;
     await load();
+  }
+
+  async function loggedIn() {
+    const id = loggingIn?.id;
+    loggingIn = null;
+    await load();
+    const a = accounts.find((x) => x.id === id);
+    if (a) await test(a);
   }
 
   function detail(a: Account): string {
@@ -135,9 +145,16 @@
                 <div class="flex items-center gap-2 font-medium">
                   {a.name}
                   {#if a.kind !== 'paper'}
-                    <span class="badge badge-xs {a.secretsSet.length ? 'badge-success' : 'badge-warning'} badge-soft">
-                      {a.secretsSet.length ? 'credentials saved' : 'no credentials'}
-                    </span>
+                    {#if a.kind === 'fyers'}
+                      {@const ok = a.secretsSet.includes('accessToken')}
+                      <span class="badge badge-xs {ok ? 'badge-success' : 'badge-warning'} badge-soft">
+                        {ok ? 'token saved' : a.secretsSet.includes('appSecret') ? 'login needed' : 'no credentials'}
+                      </span>
+                    {:else}
+                      <span class="badge badge-xs {a.secretsSet.length ? 'badge-success' : 'badge-warning'} badge-soft">
+                        {a.secretsSet.length ? 'credentials saved' : 'no credentials'}
+                      </span>
+                    {/if}
                   {/if}
                 </div>
                 <div class="truncate text-xs text-base-content/60">{detail(a)}</div>
@@ -147,6 +164,14 @@
                 {/if}
               </div>
               <div class="flex gap-1">
+                {#if a.kind === 'fyers'}
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    onclick={() => (loggingIn = a)}
+                    disabled={!a.secretsSet.includes('appSecret')}
+                    title={a.secretsSet.includes('appSecret') ? '' : 'Edit the account and enter the Secret ID first'}
+                  >Log in</button>
+                {/if}
                 {#if a.kind !== 'paper'}
                   <button class="btn btn-ghost btn-xs" onclick={() => test(a)} disabled={results[a.id] === 'testing'}>
                     {#if results[a.id] === 'testing'}<span class="loading loading-spinner loading-xs"></span>{/if}
@@ -172,5 +197,16 @@
       {/key}
     </div>
     <button class="modal-backdrop" aria-label="Close" onclick={() => (editing = null)}></button>
+  </dialog>
+{/if}
+
+{#if loggingIn}
+  <dialog class="modal modal-open">
+    <div class="modal-box">
+      {#key loggingIn.id}
+        <FyersLogin account={loggingIn} ondone={loggedIn} oncancel={() => (loggingIn = null)} />
+      {/key}
+    </div>
+    <button class="modal-backdrop" aria-label="Close" onclick={() => (loggingIn = null)}></button>
   </dialog>
 {/if}

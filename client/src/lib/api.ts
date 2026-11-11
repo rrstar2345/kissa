@@ -71,6 +71,10 @@ export const api = {
   saveAccount: (input: SaveAccountInput) => invoke<Account>('save_account', { input }),
   deleteAccount: (id: string) => invoke<void>('delete_account', { id }),
   testAccount: (id: string) => invoke<TestResult>('test_account', { id }),
+  fyersLoginUrl: (id: string) => invoke<string>('fyers_login_url', { id }),
+  fyersLoginLocal: (id: string) => invoke<void>('fyers_login_local', { id }),
+  fyersLoginCancel: (id: string) => invoke<void>('fyers_login_cancel', { id }),
+  fyersLogin: (id: string, pasted: string) => invoke<void>('fyers_login', { id, pasted }),
 
   placeOrder: (input: PlaceOrderInput) => invoke<OrderRow>('place_order', { input }),
   cancelOrder: (id: string) => invoke<OrderRow>('cancel_order', { id }),

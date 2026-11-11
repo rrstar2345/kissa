@@ -19,7 +19,7 @@ KISSA streams option prices, lets you place orders through your own [`broker-pro
 ## Data sources
 
 - **NSE (default)** – public NSE endpoints and WebSocket streams, no credentials. Ported from `kstocks_egui`: browser-style cookie warm-up, NSE-synced IST market clock (Active/Idle session mode), F&O symbol/expiry resolution. NSE streams ticks only during market hours (≈ 9:00–15:30 IST, Mon–Fri).
-- **Fyers (optional)** – your own API app ID + access token (stored in the OS keychain). The chain is polled (default every 5 s) from the Fyers v3 [Option Chain API](https://fyers.in/api-docs/v3/api/market-data/option-chain/) with `greeks=1`, so it also works after hours. Fyers access tokens expire daily; paste a fresh one under **Accounts** when needed.
+- **Fyers (optional)** – your own API app ID + secret ID (create the app in the Fyers API dashboard, with a redirect URL; the secret is stored in the OS keychain). Use **Log in** on the account: it opens the Fyers login, you paste back the URL you land on, and the app generates the access token for you. The chain is polled (default every 5 s) from the Fyers v3 [Option Chain API](https://fyers.in/api-docs/v3/api/market-data/option-chain/) with `greeks=1`, so it also works after hours. Fyers access tokens expire daily (6:30 AM); click **Log in** again under **Accounts** each trading day.
 
 Choose the source on the Option Chain page or under **Accounts → Market data source**.
 

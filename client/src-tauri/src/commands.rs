@@ -227,6 +227,37 @@ pub async fn test_account(id: String, state: State<'_, SharedState>) -> Res<Test
     })
 }
 
+/// Fyers login step 1: the URL to open in the browser.
+#[tauri::command]
+pub async fn fyers_login_url(id: String, state: State<'_, SharedState>) -> Res<String> {
+    accounts::fyers_login_url(&state.db, &state.config, &id).await.map_err(err)
+}
+
+/// Fyers one-click login: listens on the redirect URL's local port, opens the
+/// browser and returns once the access token is saved.
+#[tauri::command]
+pub async fn fyers_login_local(id: String, app: tauri::AppHandle, state: State<'_, SharedState>) -> Res<()> {
+    use tauri_plugin_opener::OpenerExt;
+    accounts::fyers_login_local(&state.db, &state.config, &id, |url| {
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|e| anyhow::anyhow!("Could not open the browser: {e}"))
+    })
+    .await
+    .map_err(err)
+}
+
+#[tauri::command]
+pub fn fyers_login_cancel(id: String) {
+    accounts::fyers_login_cancel(&id);
+}
+
+/// Fyers login step 2: exchange the pasted redirect URL / auth code for an access token.
+#[tauri::command]
+pub async fn fyers_login(id: String, pasted: String, state: State<'_, SharedState>) -> Res<()> {
+    accounts::fyers_login(&state.db, &state.config, &id, &pasted).await.map_err(err)
+}
+
 // ---------------------------------------------------------------- charts ---
 
 #[tauri::command]

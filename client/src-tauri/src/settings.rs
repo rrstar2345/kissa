@@ -111,6 +111,10 @@ impl Default for MarketRuntimeConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct FyersConfig {
+    /// Login page the browser is sent to (https://fyers.in/api-docs/v3/api/authentication/individual-app/generate-auth-code/).
+    pub auth_url: String,
+    /// Exchanges the auth code for an access token (.../validate-auth-code/).
+    pub validate_url: String,
     /// Option chain endpoint. Confirm against Fyers' API reference if it changes.
     pub chain_url: String,
     /// Historical candles endpoint (not yet verified against live Fyers).
@@ -126,6 +130,8 @@ pub struct FyersConfig {
 impl Default for FyersConfig {
     fn default() -> Self {
         Self {
+            auth_url: "https://api-t1.fyers.in/api/v3/generate-authcode".into(),
+            validate_url: "https://api-t1.fyers.in/api/v3/validate-authcode".into(),
             chain_url: "https://api-t1.fyers.in/data/options-chain-v3".into(),
             history_url: "https://api-t1.fyers.in/data/history".into(),
             status_url: "https://api-t1.fyers.in/data/marketStatus".into(),
