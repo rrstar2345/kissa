@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 use tracing::warn;
 
 use super::{store, Bar};
@@ -34,6 +35,8 @@ struct Inner {
 pub struct Recorder {
     pool: Option<SqlitePool>,
     inner: Mutex<Inner>,
+    /// Woken when a bar changes, so the UI emitter sleeps while idle.
+    wake: Notify,
 }
 
 #[derive(Serialize, Clone)]
@@ -55,7 +58,7 @@ pub fn in_session(ts: i64) -> bool {
 
 impl Recorder {
     pub fn new(pool: SqlitePool) -> Arc<Self> {
-        Arc::new(Self { pool: Some(pool), inner: Mutex::new(Inner::default()) })
+        Arc::new(Self { pool: Some(pool), inner: Mutex::new(Inner::default()), wake: Notify::new() })
     }
 
     /// Record one observation. `cum_volume` is the day's cumulative traded
@@ -102,6 +105,8 @@ impl Recorder {
             live.bar.oi = oi;
         }
         live.dirty = true;
+        drop(guard);
+        self.wake.notify_one();
     }
 
     /// Collect bars changed since the last call (for the UI) and stage them
@@ -154,25 +159,30 @@ impl Recorder {
     }
 
     pub fn spawn(self: Arc<Self>, app: AppHandle, flush_secs: u64) {
-        // The UI tick is 250 ms; the DB flush keeps its own seconds-based cadence.
-        let flush_every = flush_secs.max(1) * 4;
         tauri::async_runtime::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_millis(250));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut n: u64 = 0;
+            // UI pushes are event-driven: sleep until a bar changes, then wait
+            // 250 ms so ticks coalesce into one `bar-update`. The DB flush
+            // keeps its own seconds-based timer.
+            let mut flush = tokio::time::interval(Duration::from_secs(flush_secs.max(1)));
+            flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            flush.tick().await;
             loop {
-                ticker.tick().await;
-                let events = self.stage();
-                if !events.is_empty() {
-                    let _ = app.emit("bar-update", events);
-                }
-                n += 1;
-                if n % flush_every == 0 {
-                    let batch = self.take_unsaved();
-                    if let (false, Some(pool)) = (batch.is_empty(), self.pool.as_ref()) {
-                        if let Err(e) = store::upsert_live(pool, &batch).await {
-                            warn!("Bar flush failed ({} bars), will retry: {e}", batch.len());
-                            self.requeue(batch);
+                tokio::select! {
+                    _ = self.wake.notified() => {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        let events = self.stage();
+                        if !events.is_empty() {
+                            crate::emit_stats::count("bar-update");
+                            let _ = app.emit("bar-update", events);
+                        }
+                    }
+                    _ = flush.tick() => {
+                        let batch = self.take_unsaved();
+                        if let (false, Some(pool)) = (batch.is_empty(), self.pool.as_ref()) {
+                            if let Err(e) = store::upsert_live(pool, &batch).await {
+                                warn!("Bar flush failed ({} bars), will retry: {e}", batch.len());
+                                self.requeue(batch);
+                            }
                         }
                     }
                 }
@@ -189,7 +199,7 @@ mod tests {
     const OPEN: i64 = 1_793_850_300;
 
     fn rec() -> Recorder {
-        Recorder { pool: None, inner: Mutex::new(Inner::default()) }
+        Recorder { pool: None, inner: Mutex::new(Inner::default()), wake: Notify::new() }
     }
 
     #[test]

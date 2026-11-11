@@ -78,7 +78,13 @@ Stack: Tauri v2 (Rust) + SvelteKit/Svelte 5 + Tailwind v4 + DaisyUI 5 (themes `k
   - Stats: trades, win rate, gross/net P&L, charges, profit factor, expectancy, avg win/loss, best/worst, max drawdown (rupees and % of peak equity when a starting capital is given), longest losing streak, avg bars held, return %, closed-trade equity curve.
   - Code: `backtest/mod.rs`; command `run_backtest`. Frontend `routes/backtest`.
   - Not done: backtesting a saved *algo* (strike selection, bar data of the option legs, both legs for `both`); shorting; per-trade chart markers; saving/comparing runs.
-- **Real-time UI**: `quotes` event (100 ms batches), `bar-update`, `chain-snapshot`, `order-update`, `broker-status`, `index-tick`, `risk-update`, `alert-update`, `copier-update`, `algo-update`.
+- **Event-driven UI refresh (Roadmap #7 done; tested by the user)**: no timers wake the backend while the market is quiet.
+  - `quotes`: `LtpStore::set` calls `ui_wake().notify_one()` on a price change; the task in `lib.rs` waits on it, sleeps 50 ms to coalesce, `drain_changed()`, emits, sleeps again. `index-tick` is coalesced the same way (dirty-name set + `Notify`, latest tick per index, 50 ms). `bar-update`: `Recorder::record` wakes the emitter (250 ms coalesce); the DB flush has its own `flush_secs` interval.
+  - `market-status`: a 1 s Rust-side check (`commands::build_market_status`, `MarketStatus::change_key`) emits only when exchange state, mode, `withinWindow` or stream state/error/reconnects change (tick counters and clock are ignored). Payload has `nowMs`; `market.svelte.ts` keeps `market.clock` (IST) running locally, no IPC polling. Listen first, then read `market_status` once.
+  - Frontend: `lib/timers.ts` `every(fn, ms)` is `setInterval` that skips while `document.hidden`; use it for any page poll. `quotes.nowSecs` ticks every 5 s (freshness limit is 120 s). Remaining page polls (5-30 s) are safety nets next to events; risk page's 5 s poll feeds live P&L.
+  - Not changed: the chain engine ticker (150 ms, `chain/runner.rs`) still runs while a chain is open; making it event-driven needs a spot-price wake-up.
+  - Debug: `KISSA_EMIT_STATS=1` logs emits per second per event every 10 s (`emit_stats.rs`, `emit_stats::count("event")` at emit sites; add it to new emitters).
+- **Real-time UI**: `quotes` event (event-driven, 50 ms coalesce), `bar-update`, `chain-snapshot`, `order-update`, `broker-status`, `index-tick`, `risk-update`, `alert-update`, `copier-update`, `algo-update`, `market-status`.
 - **Market status per source. (Bug fix done)** 
   - `market/status.rs` polls NSE `/api/marketStatus` (Capital Market row; F&O follows it) and Fyers `/data/marketStatus` (NSE 10, equity derivatives 11, NORMAL row; only when Fyers is the data source). 
   - No calls outside the weekday 08:30-16:00 IST window; 5 min while stable, 30 s around pre-open and the close, none after the day's close. 
@@ -88,9 +94,7 @@ Stack: Tauri v2 (Rust) + SvelteKit/Svelte 5 + Tailwind v4 + DaisyUI 5 (themes `k
   - Known gaps: the pre-open status strings for NSE ('Pre-Open' assumed) and Fyers segment 11 are unverified; special sessions outside 08:30-16:00 (Muhurat) are not covered.
 
 ## Roadmap (remaining)
-Confirm scope with the user before starting each. Item numbers are kept from the original list (#1 signals, #2 risk controls, #3 alerts, #4 trade copier, #5 algo trading, #6 backtesting and market status bug fix are done).
-
-**7. Screen refresh and responsiveness.** Quotes are pushed to the UI in 100 ms batches (`quotes` event, a timer in `lib.rs` calling `ltp.drain_changed()`), which wakes up even when nothing changed. Replace the polling timer with event-driven pushes: emit when a tick actually changes a price (coalesced, e.g. at most one emit per frame while ticks are arriving, nothing while idle), from the Rust side that receives the WSS/NSE feed. Check the other emitters (`chain-snapshot`, `index-tick`, `bar-update`, `order-update`) and the frontend stores for needless re-renders and timers (`setInterval` polling in pages) at the same time. Agree the design and measure CPU before and after.
+Confirm scope with the user before starting each. Item numbers are kept from the original list (#1 signals, #2 risk controls, #3 alerts, #4 trade copier, #5 algo trading, #6 backtesting, market status bug fix and #7 screen refresh are done).
 
 **8. Today's P&L in the top bar.** Next to the index watchlist in `+layout.svelte`: overall net P&L today and per account (same numbers as the dashboard: realised + unrealised - charges, `net_today`), updating live with quotes, plus a button that opens Orders > Positions. Needs a compact account breakdown (many accounts: show the top few or a hover/popover list).
 

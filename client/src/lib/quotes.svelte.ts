@@ -17,14 +17,14 @@ interface QuoteTick {
 }
 
 /**
- * Live prices pushed by the backend (`quotes` event, batched every 100 ms).
+ * Live prices pushed by the backend (`quotes` event, pushed when prices change, coalesced over 50 ms).
  * Components read `prices.get(key)` inside `$derived` / `$effect`; only those
  * that read a key re-run when that key's price changes, so a tick repaints
  * just the cells showing it.
  */
 class QuoteStore {
   prices = new SvelteMap<string, Px>();
-  /** Epoch seconds, advanced once a second so live / last badges age without ticks. */
+  /** Epoch seconds, advanced every 5 s so live / last badges age without ticks. */
   nowSecs = $state(Math.floor(Date.now() / 1000));
   private unlisten: UnlistenFn | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -33,7 +33,10 @@ class QuoteStore {
   async start() {
     if (this.started) return;
     this.started = true;
-    this.timer = setInterval(() => (this.nowSecs = Math.floor(Date.now() / 1000)), 1000);
+    // Freshness is judged in tens of seconds, so a slow clock is enough; skipped while hidden.
+    this.timer = setInterval(() => {
+      if (!document.hidden) this.nowSecs = Math.floor(Date.now() / 1000);
+    }, 5000);
     this.unlisten = await listen<QuoteTick[]>('quotes', (e) => {
       const rx = Math.floor(Date.now() / 1000);
       for (const q of e.payload) this.prices.set(q.k, { ltp: q.p, rx });

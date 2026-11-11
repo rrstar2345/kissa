@@ -29,39 +29,57 @@ export function stateBadge(s: SourceStatus | undefined): string {
   }
 }
 
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+function fmtIst(ms: number): string {
+  const d = new Date(ms + IST_OFFSET_MS);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+
 class MarketStore {
   status = $state<MarketStatus | null>(null);
   indices = $state<Record<string, IndexTick>>({});
+  /** IST wall clock (HH:MM:SS), kept running locally from the backend's clock. */
+  clock = $state('');
+  private offsetMs = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private unlisten: UnlistenFn | null = null;
+  private unlisten: UnlistenFn[] = [];
 
-  async start() {
-    const seed = await api.indicesSnapshot().catch(() => []);
-    for (const t of seed) this.indices[t.indexName] = t;
-    this.unlisten = await listen<IndexTick>('index-tick', (e) => {
-      this.indices[e.payload.indexName] = e.payload;
-    });
-    await this.refresh();
-    // Status is a small read (clock, mode, stream states): once a second keeps
-    // the header clock ticking and stream changes visible almost at once.
-    this.timer = setInterval(() => this.refresh(), 1000);
+  private apply(s: MarketStatus) {
+    this.status = s;
+    this.offsetMs = s.nowMs - Date.now();
+    this.tickClock();
   }
 
-  private busy = false;
+  private tickClock() {
+    this.clock = fmtIst(Date.now() + this.offsetMs);
+  }
 
-  async refresh() {
-    if (this.busy) return; // never queue calls behind a slow one
-    this.busy = true;
-    try {
-      this.status = await api.marketStatus().catch(() => this.status);
-    } finally {
-      this.busy = false;
-    }
+  async start() {
+    // Listen first, then read the current state, so no push is missed in between.
+    this.unlisten.push(
+      await listen<IndexTick>('index-tick', (e) => {
+        this.indices[e.payload.indexName] = e.payload;
+      }),
+      await listen<MarketStatus>('market-status', (e) => this.apply(e.payload))
+    );
+    const seed = await api.indicesSnapshot().catch(() => []);
+    for (const t of seed) this.indices[t.indexName] = this.indices[t.indexName] ?? t;
+    const s = await api.marketStatus().catch(() => null);
+    if (s) this.apply(s);
+    // Status changes are pushed by the backend (`market-status`); this timer
+    // only advances the displayed clock, with no backend call.
+    this.timer = setInterval(() => {
+      if (!document.hidden) this.tickClock();
+    }, 1000);
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer);
-    this.unlisten?.();
+    this.timer = null;
+    this.unlisten.forEach((u) => u());
+    this.unlisten = [];
   }
 }
 

@@ -86,7 +86,7 @@
       <div class="ml-auto flex items-center gap-3 text-xs">
         <KillSwitch />
         {#if market.status}
-          <span class="num text-base-content/70">IST {market.status.istTime}</span>
+          <span class="num text-base-content/70">IST {market.clock}</span>
           {@const nse = market.status.nse}
           <span
             class="badge badge-sm {stateBadge(nse)}"

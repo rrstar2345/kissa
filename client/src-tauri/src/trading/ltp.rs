@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Notify;
 
 use crate::market::market_clock;
 
@@ -37,6 +38,8 @@ pub struct LtpStore {
     /// Prices that changed since the last `drain_changed` (latest per key),
     /// so the UI gets one batched event instead of one per tick.
     changed: Mutex<HashMap<String, Quote>>,
+    /// Woken when a price changes, so the UI emitter sleeps while idle.
+    ui_wake: Arc<Notify>,
 }
 
 impl LtpStore {
@@ -47,6 +50,7 @@ impl LtpStore {
             watched: RwLock::new(HashSet::new()),
             notify: tx,
             changed: Mutex::new(HashMap::new()),
+            ui_wake: Arc::new(Notify::new()),
         };
         (Arc::new(store), rx)
     }
@@ -68,10 +72,16 @@ impl LtpStore {
             if let Ok(mut c) = self.changed.lock() {
                 c.insert(key.to_string(), Quote { ltp, at });
             }
+            self.ui_wake.notify_one();
             if self.watched.read().map(|w| w.contains(key)).unwrap_or(false) {
                 let _ = self.notify.send(key.to_string());
             }
         }
+    }
+
+    /// Signalled whenever a price changes (a permit is kept if nobody waits).
+    pub fn ui_wake(&self) -> Arc<Notify> {
+        self.ui_wake.clone()
     }
 
     /// Take the prices that changed since the last call (latest per key).

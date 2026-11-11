@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { every } from '$lib/timers';
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
@@ -51,7 +52,7 @@
 
   // Safety net only (a missed event, a long sleep): live prices do not need it.
   onMount(() => {
-    const t = setInterval(loadDash, 30_000);
+    const t = every(loadDash, 30_000);
     return () => clearInterval(t);
   });
 

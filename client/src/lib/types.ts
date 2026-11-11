@@ -82,6 +82,8 @@ export interface SourceStatus {
 
 export interface MarketStatus {
   istTime: string;
+  /** UTC epoch ms of the snapshot (backend, NSE-synced clock); the header clock runs from it. */
+  nowMs: number;
   /** Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use nse / fyers. */
   withinWindow: boolean;
   mode: string;

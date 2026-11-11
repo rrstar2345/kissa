@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { every } from '$lib/timers';
   import { onMount, untrack } from 'svelte';
   import { api } from '$lib/api';
   import { trading } from '$lib/trading.svelte';
@@ -42,7 +43,7 @@
   });
   // P&L moves with prices; refresh the live numbers every few seconds.
   onMount(() => {
-    const t = setInterval(load, 5000);
+    const t = every(load, 5000);
     return () => clearInterval(t);
   });
 

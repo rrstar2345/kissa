@@ -6,6 +6,7 @@ mod chain;
 mod charts;
 mod commands;
 mod db;
+mod emit_stats;
 mod market;
 mod secrets;
 mod settings;
@@ -91,18 +92,41 @@ pub fn run() {
                 }
             });
 
-            // Live prices: push every changed price to the UI in one batched
-            // event every 100 ms, so positions, P&L and the order ticket update
-            // as the market moves instead of on a polling timer.
+            // Debug only: `KISSA_EMIT_STATS=1` logs UI emits per second.
+            emit_stats::spawn();
+
+            // Live prices: event-driven. The task sleeps until a price changes,
+            // waits 50 ms so a burst of ticks becomes one `quotes` event, and
+            // goes back to sleep. Nothing runs while the market is quiet.
             let (quote_app, quote_ltp) = (app.handle().clone(), state.ltp.clone());
             tauri::async_runtime::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let wake = quote_ltp.ui_wake();
                 loop {
-                    tick.tick().await;
+                    wake.notified().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     let batch = quote_ltp.drain_changed();
                     if !batch.is_empty() {
+                        emit_stats::count("quotes");
                         let _ = quote_app.emit("quotes", batch);
+                    }
+                }
+            });
+
+            // Market status: pushed only when something the UI shows changes
+            // (exchange state, mode, stream state). The UI keeps its own clock.
+            let (status_app, status_state) = (app.handle().clone(), state.clone());
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut last = String::new();
+                loop {
+                    tick.tick().await;
+                    let st = commands::build_market_status(&status_state).await;
+                    let key = st.change_key();
+                    if key != last {
+                        last = key;
+                        emit_stats::count("market-status");
+                        let _ = status_app.emit("market-status", &st);
                     }
                 }
             });
@@ -116,6 +140,32 @@ pub fn run() {
             let handle = app.handle().clone();
             let store = state.indices.clone();
             let recorder = state.recorder.clone();
+            // Index ticks are coalesced: the sink marks the index changed and
+            // wakes the emitter, which sends the latest tick per index at most
+            // every 50 ms and sleeps when no index is moving.
+            let index_wake = Arc::new(tokio::sync::Notify::new());
+            let index_dirty: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Default::default();
+            {
+                let (wake, dirty, store, handle) =
+                    (index_wake.clone(), index_dirty.clone(), store.clone(), handle.clone());
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        wake.notified().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        let names: Vec<String> = match dirty.lock() {
+                            Ok(mut d) => d.drain().collect(),
+                            Err(_) => continue,
+                        };
+                        for name in names {
+                            let tick = store.read().ok().and_then(|m| m.get(&name).cloned());
+                            if let Some(tick) = tick {
+                                emit_stats::count("index-tick");
+                                let _ = handle.emit("index-tick", &tick);
+                            }
+                        }
+                    }
+                });
+            }
             let sink: IndexSink = Arc::new(move |tick: IndexTick| {
                 recorder.record(
                     &charts::instrument::index_key(&tick.index_name),
@@ -124,10 +174,14 @@ pub fn run() {
                     None,
                     None,
                 );
+                let name = tick.index_name.clone();
                 if let Ok(mut m) = store.write() {
-                    m.insert(tick.index_name.clone(), tick.clone());
+                    m.insert(name.clone(), tick);
                 }
-                let _ = handle.emit("index-tick", &tick);
+                if let Ok(mut d) = index_dirty.lock() {
+                    d.insert(name);
+                }
+                index_wake.notify_one();
             });
             tauri::async_runtime::spawn(streamers::indices::run(
                 config,

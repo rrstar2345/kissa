@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { every } from '$lib/timers';
   import { onMount } from 'svelte';
   import { api, getJson, setJson } from '$lib/api';
   import { indexKey } from '$lib/charts';
@@ -48,7 +49,7 @@
       ready = true;
       list = await api.listChartInstruments().catch(() => list);
     })();
-    const timer = setInterval(async () => (list = await api.listChartInstruments().catch(() => list)), 30_000);
+    const timer = every(async () => (list = await api.listChartInstruments().catch(() => list)), 30_000);
     return () => clearInterval(timer);
   });
 

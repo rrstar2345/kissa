@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { every } from '$lib/timers';
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
@@ -69,7 +70,7 @@
     load();
   });
   $effect(() => {
-    const t = setInterval(load, 30_000);
+    const t = every(load, 30_000);
     return () => clearInterval(t);
   });
 

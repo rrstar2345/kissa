@@ -154,6 +154,7 @@ pub fn spawn_nse(
                     last_spot_px = spot_px;
                     window = spot.as_ref().and_then(|s| engine.strike_window(s.current_price, each_side));
                     let vix = find_index(&store, &["INDIA VIX".to_string()]).map(|t| t.current_price);
+                    crate::emit_stats::count("chain-snapshot");
                     let _ = app.emit(SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));
                 }
             }

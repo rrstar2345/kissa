@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { every } from '$lib/timers';
   import { onMount } from 'svelte';
   import { api, getJson, setJson } from '$lib/api';
   import { INDICATOR_PRESETS, indexKey } from '$lib/charts';
@@ -27,7 +28,7 @@
       ready = true;
       await refreshList();
     })();
-    const timer = setInterval(refreshList, 30_000);
+    const timer = every(refreshList, 30_000);
     return () => clearInterval(timer);
   });
 

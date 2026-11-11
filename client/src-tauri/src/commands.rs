@@ -12,7 +12,7 @@ use crate::db;
 use crate::market::events::IndexTick;
 use crate::market::status::SourceStatus;
 use crate::market::{market_clock, symbols};
-use crate::state::SharedState;
+use crate::state::{AppState, SharedState};
 use crate::stats::StreamStat;
 
 type Res<T> = Result<T, String>;
@@ -29,6 +29,9 @@ const FALLBACK_SYMBOLS: [&str; 5] = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIF
 #[serde(rename_all = "camelCase")]
 pub struct MarketStatus {
     pub ist_time: String,
+    /// UTC epoch milliseconds (NSE-synced clock) at the time of the snapshot, so
+    /// the UI can keep its own clock running between pushes.
+    pub now_ms: i64,
     /// Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use `nse` / `fyers`.
     pub within_window: bool,
     pub mode: String,
@@ -38,20 +41,45 @@ pub struct MarketStatus {
     pub streams: Vec<StreamStat>,
 }
 
-#[tauri::command]
-pub async fn market_status(state: State<'_, SharedState>) -> Res<MarketStatus> {
+impl MarketStatus {
+    /// Everything the UI shows except the clock and tick counters. The status
+    /// push task emits only when this changes.
+    pub fn change_key(&self) -> String {
+        let streams: Vec<_> = self
+            .streams
+            .iter()
+            .map(|s| (&s.name, &s.state, &s.last_error, s.reconnect_count))
+            .collect();
+        serde_json::json!({
+            "w": self.within_window,
+            "m": &self.mode,
+            "n": &self.nse,
+            "f": &self.fyers,
+            "s": streams,
+        })
+        .to_string()
+    }
+}
+
+pub async fn build_market_status(state: &AppState) -> MarketStatus {
     let now = market_clock::get_ist_now();
     let ist = now + chrono::Duration::seconds(5 * 3600 + 30 * 60);
     let mut streams: Vec<StreamStat> = state.stats.read().await.streams.values().cloned().collect();
     streams.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(MarketStatus {
+    MarketStatus {
         ist_time: format!("{:02}:{:02}:{:02}", ist.hour(), ist.minute(), ist.second()),
+        now_ms: now.timestamp_millis(),
         within_window: market_clock::is_within_trading_window(now),
         mode: state.session.mode().await.label().to_string(),
         nse: state.market_status.nse(),
         fyers: state.market_status.fyers(),
         streams,
-    })
+    }
+}
+
+#[tauri::command]
+pub async fn market_status(state: State<'_, SharedState>) -> Res<MarketStatus> {
+    Ok(build_market_status(&state).await)
 }
 
 #[tauri::command]

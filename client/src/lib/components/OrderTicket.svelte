@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { every } from '$lib/timers';
   import { api } from '$lib/api';
   import { num } from '$lib/format';
   import { quotes } from '$lib/quotes.svelte';
@@ -104,7 +105,7 @@
       }
     };
     poll();
-    const t = setInterval(poll, 5000);
+    const t = every(poll, 5000);
     return () => {
       stop = true;
       clearInterval(t);
