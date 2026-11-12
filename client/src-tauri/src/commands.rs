@@ -346,7 +346,8 @@ pub async fn backfill_chart(
 
 // --------------------------------------------------------------- trading ---
 
-use crate::trading::{ContractInfo, Dashboard, DiaryDay, ExitAllResult, OrderRow, PlaceOrderInput, QuoteView, TradeRow};
+use crate::trading::period::Performance;
+use crate::trading::{ContractInfo, Dashboard, ExitAllResult, OrderRow, PlaceOrderInput, QuoteView, TradeRow};
 
 #[tauri::command]
 pub async fn place_order(input: PlaceOrderInput, state: State<'_, SharedState>) -> Res<OrderRow> {
@@ -392,13 +393,13 @@ pub async fn get_dashboard(account_id: Option<String>, state: State<'_, SharedSt
 }
 
 #[tauri::command]
-pub async fn get_diary(
+pub async fn get_performance(
+    view: String,
+    anchor: String,
     account_id: Option<String>,
-    from: String,
-    to: String,
     state: State<'_, SharedState>,
-) -> Res<Vec<DiaryDay>> {
-    state.trading.diary(account_id.as_deref(), &from, &to).await.map_err(err)
+) -> Res<Performance> {
+    state.trading.performance(&view, &anchor, account_id.as_deref()).await.map_err(err)
 }
 
 #[tauri::command]

@@ -23,6 +23,7 @@ pub mod charges;
 pub mod copier;
 pub mod feed;
 pub mod ltp;
+pub mod period;
 pub mod pricing;
 pub mod risk;
 pub mod scrip;
@@ -236,6 +237,7 @@ pub struct AccountSummary {
     /// realised + unrealised - charges, today.
     pub net_today: f64,
     pub open_positions: i64,
+    /// Round trips closed today (entry + exit = one trade), not fills or orders.
     pub trades_today: i64,
     pub orders_today: i64,
 }
@@ -247,19 +249,6 @@ pub struct Dashboard {
     pub trade_date: String,
     pub accounts: Vec<AccountSummary>,
     pub positions: Vec<Position>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiaryDay {
-    pub date: String,
-    pub orders: i64,
-    pub trades: i64,
-    pub realised: f64,
-    pub charges: f64,
-    /// realised - charges.
-    pub net: f64,
-    pub rows: Vec<TradeRow>,
 }
 
 /// Pushed on the `broker-status` event.

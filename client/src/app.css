@@ -196,4 +196,26 @@
   @keyframes flash-down {
     from { background-color: color-mix(in oklab, var(--color-error) 45%, transparent); }
   }
+
+  /* ---- dashboard calendar heat view ---- */
+  .heat {
+    border-collapse: separate;
+    border-spacing: 2px;
+    margin-inline: auto;
+  }
+  .heat td {
+    padding: 0;
+    text-align: center;
+    border-radius: 3px;
+    line-height: 1;
+    font-size: 10px;
+  }
+  .heat-lg td { width: 30px; height: 26px; }
+  .heat-md td { width: 24px; height: 22px; }
+  .heat-sm td { width: 11px; height: 11px; border-radius: 2px; }
+  .heat td.h-profit { background: var(--color-success); color: var(--color-success-content); }
+  .heat td.h-loss { background: var(--color-error); color: var(--color-error-content); }
+  .heat td.h-flat { background: var(--color-warning); color: var(--color-warning-content); }
+  .heat td.h-none { background: color-mix(in oklab, var(--color-base-content) 14%, transparent); color: color-mix(in oklab, var(--color-base-content) 55%, transparent); }
+  .heat td.h-pad { background: transparent; }
 }

@@ -37,3 +37,20 @@ export function istTime(ts: string): string {
   if (Number.isNaN(d.getTime())) return dash;
   return new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(11, 19);
 }
+
+/** IST calendar date (YYYY-MM-DD) of an RFC 3339 UTC timestamp. */
+export function istDay(ts: string): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return dash;
+  return new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** `DD Mon HH:MM` (IST) when `withDate`, else `HH:MM:SS`. */
+export function istStamp(ts: string, withDate: boolean): string {
+  if (!withDate) return istTime(ts);
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return dash;
+  const ist = new Date(d.getTime() + 5.5 * 3600_000);
+  const mon = ist.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' });
+  return `${ist.toISOString().slice(8, 10)} ${mon} ${ist.toISOString().slice(11, 16)}`;
+}

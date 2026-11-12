@@ -229,7 +229,7 @@ pub fn run() {
             commands::list_orders,
             commands::list_trades,
             commands::get_dashboard,
-            commands::get_diary,
+            commands::get_performance,
             commands::exit_position,
             commands::exit_all,
             commands::get_risk,

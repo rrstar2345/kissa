@@ -10,7 +10,8 @@ import type {
   ChartData,
   ContractInfo,
   Dashboard,
-  DiaryDay,
+  Performance,
+  DashView,
   ExitAllResult,
   IndicatorSpec,
   KillResult,
@@ -116,8 +117,9 @@ export const api = {
     invoke<QuoteView>('get_quote', { symbol, expiry, strike, isCall }),
   getDashboard: (accountId?: string | null) =>
     invoke<Dashboard>('get_dashboard', { accountId: accountId ?? null }),
-  getDiary: (accountId: string | null, from: string, to: string) =>
-    invoke<DiaryDay[]>('get_diary', { accountId, from, to }),
+  /** `anchor`: YYYY-MM-DD (daily) or YYYY-MM (monthly, yearly). */
+  getPerformance: (view: DashView, anchor: string, accountId: string | null) =>
+    invoke<Performance>('get_performance', { view, anchor, accountId }),
   contractInfo: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
     invoke<ContractInfo>('contract_info', { symbol, expiry, strike, isCall }),
   refreshInstruments: () => invoke<number>('refresh_instruments'),

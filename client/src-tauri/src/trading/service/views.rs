@@ -8,9 +8,10 @@ use super::TradingService;
 use crate::accounts;
 use crate::charts::instrument::option_key;
 use crate::market::market_clock;
+use crate::trading::period::{self, Performance};
 use crate::trading::pricing::{exit_price, r2};
 use crate::trading::{
-    now_ts, store, today_ist, AccountSummary, Dashboard, DiaryDay, OrderRow, Position, QuoteView, TradeRow,
+    now_ts, store, today_ist, AccountSummary, Dashboard, OrderRow, Position, QuoteView, TradeRow,
 };
 
 /// A price older than this (seconds) is shown as "last", not "live".
@@ -48,6 +49,7 @@ impl TradingService {
 
         let open = store::open_positions(&self.pool, account, &today).await?;
         let totals = store::day_totals(&self.pool, &today).await?;
+        let trips = period::closed_on(&self.pool, &today).await?;
         let order_counts = store::order_counts(&self.pool, &today).await?;
         let buffer = self.cfg.trading.exit_buffer_ticks;
 
@@ -86,7 +88,7 @@ impl TradingService {
         let summaries = accts
             .iter()
             .map(|a| {
-                let (realised, charges, trades) = totals.get(&a.id).copied().unwrap_or((0.0, 0.0, 0));
+                let (realised, charges, _fills) = totals.get(&a.id).copied().unwrap_or((0.0, 0.0, 0));
                 let mine: Vec<&Position> = positions.iter().filter(|p| p.account_id == a.id).collect();
                 let unrealised: f64 = mine.iter().filter_map(|p| p.unrealised).sum();
                 AccountSummary {
@@ -103,7 +105,7 @@ impl TradingService {
                     unrealised: r2(unrealised),
                     net_today: r2(realised + unrealised - charges),
                     open_positions: mine.len() as i64,
-                    trades_today: trades,
+                    trades_today: trips.get(&a.id).copied().unwrap_or(0),
                     orders_today: order_counts.get(&a.id).copied().unwrap_or(0),
                 }
             })
@@ -112,8 +114,11 @@ impl TradingService {
         Ok(Dashboard { as_of: now_ts(), trade_date: today, accounts: summaries, positions })
     }
 
-    pub async fn diary(&self, account: Option<&str>, from: &str, to: &str) -> Result<Vec<DiaryDay>> {
-        store::diary(&self.pool, account, from, to).await
+    /// Cards, calendar heat view and grouped diary of the dashboard.
+    pub async fn performance(&self, view: &str, anchor: &str, account: Option<&str>) -> Result<Performance> {
+        let names: HashMap<String, String> =
+            accounts::list(&self.pool).await?.into_iter().map(|a| (a.id, a.name)).collect();
+        period::load(&self.pool, view, anchor, account, &names).await
     }
 
     pub async fn list_orders(&self, account: Option<&str>, date: Option<&str>) -> Result<Vec<OrderRow>> {

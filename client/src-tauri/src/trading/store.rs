@@ -12,7 +12,7 @@ use sqlx::{AssertSqlSafe, SqlitePool};
 use std::collections::{BTreeMap, HashMap};
 
 use super::charges;
-use super::{ist_date, now_ts, DiaryDay, OrderRow, TradeRow};
+use super::{ist_date, now_ts, OrderRow, TradeRow};
 use crate::settings::ChargesConfig;
 
 /// If `table` exists but lacks `trade_date` (a leftover from a different
@@ -615,61 +615,43 @@ pub async fn last_close(pool: &SqlitePool, instrument: &str) -> Option<f64> {
         .map(|r| r.0)
 }
 
-// ----------------------------------------------------------------- diary ---
+// ------------------------------------------------------------ dashboard ---
 
-/// Trader's diary: per IST day, newest first, with that day's trades.
-pub async fn diary(pool: &SqlitePool, account: Option<&str>, from: &str, to: &str) -> Result<Vec<DiaryDay>> {
-    let trades: Vec<TradeRow> = sqlx::query_as(AssertSqlSafe(format!(
+/// Every fill up to `to` of the (account, contract, product) positions that
+/// traded between `from` and `to` (inclusive IST dates), oldest first. The
+/// earlier fills are needed to know whether a fill opened or closed a trade.
+pub async fn trades_for_window(pool: &SqlitePool, account: Option<&str>, from: &str, to: &str) -> Result<Vec<TradeRow>> {
+    Ok(sqlx::query_as::<_, TradeRow>(AssertSqlSafe(format!(
         "SELECT {TRADE_COLS} FROM trades
-         WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?
+         WHERE (? IS NULL OR account_id = ?) AND trade_date <= ?
+           AND (account_id, instrument, product) IN (
+                SELECT account_id, instrument, product FROM trades
+                WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?)
          ORDER BY ts, rowid"
     )))
+    .bind(account)
+    .bind(account)
+    .bind(to)
     .bind(account)
     .bind(account)
     .bind(from)
     .bind(to)
     .fetch_all(pool)
-    .await?;
-    let orders: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT trade_date, COUNT(*) FROM orders
-         WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?
-         GROUP BY trade_date",
+    .await?)
+}
+
+/// (trade date, created at) of every order between two IST dates.
+pub async fn order_times(pool: &SqlitePool, account: Option<&str>, from: &str, to: &str) -> Result<Vec<(String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT trade_date, created_at FROM orders
+         WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?",
     )
     .bind(account)
     .bind(account)
     .bind(from)
     .bind(to)
     .fetch_all(pool)
-    .await?;
-
-    let mut days: BTreeMap<String, DiaryDay> = BTreeMap::new();
-    let blank = |date: &str| DiaryDay {
-        date: date.to_string(),
-        orders: 0,
-        trades: 0,
-        realised: 0.0,
-        charges: 0.0,
-        net: 0.0,
-        rows: Vec::new(),
-    };
-    for (date, n) in orders {
-        days.entry(date.clone()).or_insert_with(|| blank(&date)).orders = n;
-    }
-    for t in trades {
-        let d = days.entry(t.trade_date.clone()).or_insert_with(|| blank(&t.trade_date));
-        d.trades += 1;
-        d.realised += t.realised;
-        d.charges += t.charges;
-        d.rows.push(t);
-    }
-    let mut out: Vec<DiaryDay> = days.into_values().collect();
-    for d in out.iter_mut() {
-        d.realised = (d.realised * 100.0).round() / 100.0;
-        d.charges = (d.charges * 100.0).round() / 100.0;
-        d.net = ((d.realised - d.charges) * 100.0).round() / 100.0;
-    }
-    out.reverse();
-    Ok(out)
+    .await?)
 }
 
 #[cfg(test)]
@@ -901,9 +883,8 @@ mod tests {
         assert!((charges - (buy.charges + sell.charges)).abs() < 0.011);
         assert_eq!(n, 2);
 
-        let days = diary(&pool, None, &today, &today).await.unwrap();
-        assert_eq!(days.len(), 1);
-        assert_eq!(days[0].trades, 2);
-        assert_eq!(days[0].orders, 2);
+        let fills = trades_for_window(&pool, None, &today, &today).await.unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(order_times(&pool, None, &today, &today).await.unwrap().len(), 2);
     }
 }

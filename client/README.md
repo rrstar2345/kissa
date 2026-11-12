@@ -4,22 +4,12 @@ A desktop app for stock and options traders, built with **Tauri v2** (Rust) and 
 
 KISSA streams option prices, lets you place orders through your own [`broker-proxy`](../broker-proxy) (a static-IP Go server), and keeps every credential, order and account detail **on your machine**.
 
-## Status
-
-| Area | State |
-|---|---|
-| Accounts (paper, Dhan, broker-proxy, Fyers data) | ✅ Phase 1 |
-| Option chain (NSE live stream / Fyers polling, IV + Greeks, configurable columns) | ✅ Phase 1 |
-| Charts (lightweight-charts, stored 1m/daily bars, Rust-computed indicators + signals, Fyers backfill) | ✅ Phase 2 |
-| Orders (broker-proxy REST + WSS, paper fills, local order log) | ✅ Phase 3 (paper verified; never exercised against live Dhan/proxy) |
-| Dashboard (live P&L, trader's diary) | ✅ Phase 3 |
-| Exit button, Settings page (server connection, `settings.json` editor), order gate | ✅ Done |
-| Broker interface + paper fidelity (margin check, auto square-off, slippage/latency, Exit All, live price in ticket) | ✅ Roadmap item 0 |
+Project status, the roadmap and design notes are kept in [`CLAUDE.md`](../CLAUDE.md).
 
 ## Data sources
 
 - **NSE (default)** – public NSE endpoints and WebSocket streams, no credentials. Ported from `kstocks_egui`: browser-style cookie warm-up, NSE-synced IST market clock (Active/Idle session mode), F&O symbol/expiry resolution. NSE streams ticks only during market hours (≈ 9:00–15:30 IST, Mon–Fri).
-- **Fyers (optional)** – your own API app ID + secret ID (create the app in the Fyers API dashboard, with a redirect URL; the secret is stored in the OS keychain). Use **Log in** on the account: it opens the Fyers login, you paste back the URL you land on, and the app generates the access token for you. The chain is polled (default every 5 s) from the Fyers v3 [Option Chain API](https://fyers.in/api-docs/v3/api/market-data/option-chain/) with `greeks=1`, so it also works after hours. Fyers access tokens expire daily (6:30 AM); click **Log in** again under **Accounts** each trading day.
+- **Fyers (optional)** – your own API app ID + secret ID (create the app in the Fyers API dashboard, with a redirect URL; the secret is stored in the OS keychain). Use **Log in** on the account: it opens the Fyers login and the app generates the access token for you (the redirect is caught automatically on a `http://127.0.0.1:<port>/` redirect URL, or you can paste back the code or URL you land on). The chain is polled (default every 5 s) from the Fyers v3 [Option Chain API](https://fyers.in/api-docs/v3/api/market-data/option-chain/) with `greeks=1`, so it also works after hours. Fyers access tokens expire daily (6:30 AM); click **Log in** again under **Accounts** each trading day.
 
 Choose the source on the Option Chain page or under **Accounts → Market data source**.
 
@@ -41,7 +31,12 @@ Choose the source on the Option Chain page or under **Accounts → Market data s
 - **Ledger**: `orders` and `trades` tables in `kissa.db`. Positions are derived from trades (average cost) and are not stored. Charges are an estimate per fill: flat brokerage per order, STT, exchange fee, SEBI, stamp duty and GST.
 - **Prices**: a shared store fed by the chain engines, plus an automatic background stream for any symbol/expiry that has open positions or pending paper orders.
 - **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**.
-- **Dashboard**: per-account cards (realised, unrealised, charges, net today), open positions with live/last/none LTP badge, and the trader's diary (per-day orders, trades, realised, charges, net, expandable trades).
+- **Dashboard**: a `Daily | Monthly | Yearly` toggle (default Monthly), a period picker and an accounts filter drive everything below.
+  - **Cards**: Net P&L, Gross P&L, Trades, Total charges and ROI for the period (Daily = the day, Monthly = the month, Yearly = the 12 months ending at the selected month).
+  - **Calendar heat view**: columns of the last 4 days (one cell per hour), the last 4 months (calendar, one cell per day) or the last 12 months (calendar, coloured cells only), each with a net P&L pill. Green = net profit, red = net loss, yellow = net zero, grey = no activity.
+  - **Trader's diary**: grouped by hour, day or month to match the view; expand a group to see its trades (entry and exit of each).
+  - **Open positions** with live/last/none LTP badge (follows the accounts filter).
+  - **How it is counted**: realised P&L and charges belong to the IST hour/day/month of the fill that booked them; open positions (unrealised) are not included. A **trade** is entry + exit (a round trip, counted when it closes). **ROI** = net P&L / entry premium (price x qty of the fills that opened or added to a position).
 - **Exit / Exit all**: open positions have an **Exit** button, and Orders and Dashboard have **Exit all** (all accounts, or the selected one). The backend first cancels open orders on the contract (so a resting stop cannot reopen it), then places a LIMIT for the full quantity on the opposite side at the LTP pushed `trading.exit_buffer_ticks` (default 2) ticks against you, same product, DAY. Both ask for confirmation; Exit all lists any position it could not exit. Exit is disabled when there is no LTP.
 - **Order ticket**: shows the contract's live LTP (updated every second, live/last badge) with a **Use** button to copy it into the price.
 - **Server authentication (order gate)**: no order (paper or Dhan), and no modify, is accepted unless the server in `server` (see Configuration) accepts the API key. The key is checked on every order using a cached `paper` session on the proxy (`GET /v1/orders`), so a revoked or wrong key is caught immediately. Cancel is not gated. The proxy must therefore be reachable even for paper trading; for development run it locally (`http://localhost:<port>` is allowed) with a key from `proxy keygen`.
@@ -51,22 +46,10 @@ Choose the source on the Option Chain page or under **Accounts → Market data s
 
 Fyers supplies IV/Greeks. For NSE they are computed in Rust from LTP: Black-76 priced off a forward derived from put-call parity at ATM (no dividend assumption), r = 7% (`risk_free_rate`), time measured to 15:30 IST on expiry. Theta is per calendar day, vega per 1 vol point. NSE's stream may not include OI change, so *OI Chg* is measured from the first OI seen in the session unless NSE provides it.
 
-## Roadmap
-
-Paper trading is being hardened first so a real broker can be switched in later with minimal change. Planned, in rough order:
-
-1. **Paper fidelity, remaining**: expiry settlement and bracket (stop/target, OCO) orders. (Broker interface, margin check, auto square-off, slippage/latency and Exit all are done.)
-2. **Signal rules**: configurable indicator rules (e.g. RSI(14) crossing its EMA(9) with price above SMA(20) and SMA(50)) producing buy/sell signals on charts.
-3. **Alerts**: Telegram bot and email.
-4. **Risk controls**: daily loss limit, size and position limits, kill switch.
-5. **Trade copier**: master account replicating to child accounts with a lot factor.
-6. **Algo trading**: autonomous orders from rules (paper first).
-7. **Backtesting** of rules on stored bars.
-
 ## Security model
 
 - **Secrets** (Dhan access token, proxy API key, the server API key from Settings, Fyers token) are stored **only in the OS keychain** (macOS Keychain, Windows Credential Manager, Secret Service on Linux). They are never written to SQLite or `settings.json`, and the UI never receives them back.
-- **SQLite** (`kissa.db`) holds non-secret account fields, preferences (columns, theme, symbol) and, in later phases, the order log and diary.
+- **SQLite** (`kissa.db`) holds non-secret account fields, preferences (columns, theme, symbol), the order log, trades and bars.
 - **Proxy URL must be `https://`** (plain `http://` is accepted for `localhost` only). The proxy keeps credentials in memory per session and persists nothing; the client is the system of record.
 - Data lives in `<local data dir>/.kissa/` (`kissa.db`, `settings.json`).
 
@@ -107,7 +90,8 @@ src-tauri/src/
   charts/                bar recorder, store, indicators, backfill
   trading/               broker-independent order flow and the ledger
     broker/              Broker trait + registry; paper/ (matching, funds, book) and dhan/ (adapter + proxy client)
-    service/             orders (place/modify/cancel), exit, squareoff, views (dashboard/diary/quotes)
+    service/             orders (place/modify/cancel), exit, squareoff, views (dashboard/quotes)
     store.rs pricing.rs charges.rs ltp.rs feed.rs scrip.rs server.rs  (SQLite ledger, tick maths, costs, prices, instruments, order gate)
+    period.rs            dashboard aggregation: round-trip trades, cards, calendar heat view, grouped diary
   accounts.rs secrets.rs db.rs settings.rs commands.rs
 ```

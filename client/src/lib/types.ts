@@ -503,14 +503,81 @@ export interface Dashboard {
   positions: Position[];
 }
 
-export interface DiaryDay {
-  date: string;
-  orders: number;
-  trades: number;
-  realised: number;
+export type DashView = 'daily' | 'monthly' | 'yearly';
+
+export interface PerfSummary {
+  gross: number;
   charges: number;
   net: number;
-  rows: TradeRow[];
+  /** Closed round trips (entry + exit = one trade). */
+  trades: number;
+  fills: number;
+  entryPremium: number;
+  /** Net / entry premium, percent; null without any entry. */
+  roi: number | null;
+}
+
+export interface PerfCell {
+  label: string;
+  date: string;
+  net: number;
+  fills: number;
+  trades: number;
+  state: 'profit' | 'loss' | 'flat' | 'none';
+}
+
+export interface PerfColumn {
+  key: string;
+  label: string;
+  net: number;
+  trades: number;
+  fills: number;
+  /** Empty cells before the first one in a Monday-first calendar. */
+  leadBlank: number;
+  current: boolean;
+  cells: PerfCell[];
+}
+
+export interface PerfTrip {
+  id: string;
+  accountId: string;
+  accountName: string;
+  symbol: string;
+  expiry: string;
+  strike: number;
+  isCall: boolean;
+  product: Product;
+  long: boolean;
+  qty: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  entryTs: string;
+  exitTs: string | null;
+  gross: number;
+  charges: number;
+  net: number;
+  closed: boolean;
+}
+
+export interface PerfGroup {
+  key: string;
+  label: string;
+  orders: number;
+  trades: number;
+  fills: number;
+  gross: number;
+  charges: number;
+  net: number;
+  rows: PerfTrip[];
+}
+
+export interface Performance {
+  view: DashView;
+  from: string;
+  to: string;
+  summary: PerfSummary;
+  columns: PerfColumn[];
+  groups: PerfGroup[];
 }
 
 export interface BrokerStatus {
