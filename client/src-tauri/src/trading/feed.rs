@@ -47,21 +47,21 @@ pub fn spawn(state: SharedState) {
         loop {
             tick.tick().await;
             let needed = needed_targets(&state).await;
-            let covered: Option<Target> = state.chain.lock().await.as_ref().map(|h| h.target());
+            let covered: HashSet<Target> = state.chain.lock().await.values().map(|h| h.target()).collect();
 
             let stale: Vec<Target> = feeds
                 .keys()
-                .filter(|k| !needed.contains(*k) || covered.as_ref() == Some(*k))
+                .filter(|k| !needed.contains(*k) || covered.contains(*k))
                 .cloned()
                 .collect();
             for k in stale {
                 if let Some(f) = feeds.remove(&k) {
                     // The chain page may own the same stats entry; leave it alone then.
-                    stop(f, &state, covered.as_ref() != Some(&k)).await;
+                    stop(f, &state, !covered.contains(&k)).await;
                 }
             }
             for t in needed {
-                if covered.as_ref() == Some(&t) || feeds.contains_key(&t) {
+                if covered.contains(&t) || feeds.contains_key(&t) {
                     continue;
                 }
                 if let Some(f) = start(&state, &t).await {

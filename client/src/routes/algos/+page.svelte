@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { api, getJson, setJson } from '$lib/api';
+  import { api } from '$lib/api';
+  import { getScoped, setScoped } from '$lib/windowing';
   import { trading, contractName } from '$lib/trading.svelte';
   import { istTime, num } from '$lib/format';
   import AlgoEditor from '$lib/components/AlgoEditor.svelte';
@@ -77,7 +78,7 @@
       await loadRefs();
       underlyings = await api.listFnoSymbols().catch(() => []);
       await refresh();
-      const sel = await getJson<string>(SELECTED_KEY, '');
+      const sel = await getScoped<string>(SELECTED_KEY, '');
       load(views.find((v) => v.algo.id === sel) ?? views[0] ?? null);
       ready = true;
     })();
@@ -99,7 +100,7 @@
     if (v) {
       current = clone(v.algo);
       savedJson = JSON.stringify(current);
-      setJson(SELECTED_KEY, v.algo.id);
+      setScoped(SELECTED_KEY, v.algo.id);
     } else {
       current = blank();
       savedJson = '';

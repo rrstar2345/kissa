@@ -1,7 +1,9 @@
 //! Starts/stops the background tasks that feed the option chain view.
+//! Each window has its own chain (keyed by window label) and receives only its own events.
 
 use chrono::NaiveDate;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -45,14 +47,29 @@ impl ChainHandle {
         self.target.clone()
     }
 
-    pub async fn stop(self, stats: &SharedStats) {
+    /// Stats key of the NSE stream this handle runs (None for Fyers polling).
+    pub fn stream_key(&self) -> Option<&str> {
+        self.stream_key.as_deref()
+    }
+
+    pub async fn stop(self, stats: &SharedStats, remove_stats: bool) {
         for t in &self.tasks {
             t.abort();
         }
-        if let Some(k) = self.stream_key {
-            stats.write().await.remove_stream(&k);
+        if remove_stats {
+            if let Some(k) = self.stream_key {
+                stats.write().await.remove_stream(&k);
+            }
         }
     }
+}
+
+/// Stops a chain handle that was already taken out of `rest`'s map. Two
+/// windows can stream the same contract and share one stats entry, so the
+/// entry is removed only when no remaining chain uses it.
+pub async fn stop_handle(stats: &SharedStats, rest: &HashMap<String, ChainHandle>, h: ChainHandle) {
+    let shared = h.stream_key().is_some_and(|k| rest.values().any(|o| o.stream_key() == Some(k)));
+    h.stop(stats, !shared).await;
 }
 
 /// Look up the first candidate name present on the indices stream.
@@ -72,6 +89,7 @@ pub fn find_index(
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_nse(
     app: AppHandle,
+    label: String,
     cfg: AppConfig,
     stats: SharedStats,
     session: SharedSessionState,
@@ -155,7 +173,7 @@ pub fn spawn_nse(
                     window = spot.as_ref().and_then(|s| engine.strike_window(s.current_price, each_side));
                     let vix = find_index(&store, &["INDIA VIX".to_string()]).map(|t| t.current_price);
                     crate::emit_stats::count("chain-snapshot");
-                    let _ = app.emit(SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));
+                    let _ = app.emit_to(label.as_str(), SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));
                 }
             }
         }
@@ -167,6 +185,7 @@ pub fn spawn_nse(
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_fyers(
     app: AppHandle,
+    label: String,
     cfg: AppConfig,
     creds: FyersCreds,
     status: SharedMarketStatus,
@@ -204,10 +223,10 @@ pub fn spawn_fyers(
                                 }
                             }
                         }
-                        let _ = app.emit(SNAPSHOT_EVENT, snap);
+                        let _ = app.emit_to(label.as_str(), SNAPSHOT_EVENT, snap);
                     }
                     Err(e) => {
-                        let _ = app.emit(STATUS_EVENT, ChainStatus { state: "error", message: e.to_string() });
+                        let _ = app.emit_to(label.as_str(), STATUS_EVENT, ChainStatus { state: "error", message: e.to_string() });
                     }
                 }
                 fetched_closed = !polling && ok;
@@ -224,4 +243,12 @@ pub fn spawn_fyers(
         }
     });
     ChainHandle { tasks: vec![task], stream_key: None, target }
+}
+
+/// Stops the chain owned by the window with this label, if any.
+pub async fn stop_window_chain(state: &crate::state::AppState, label: &str) {
+    let mut slot = state.chain.lock().await;
+    if let Some(old) = slot.remove(label) {
+        stop_handle(&state.stats, &slot, old).await;
+    }
 }

@@ -1,4 +1,5 @@
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -24,7 +25,8 @@ pub struct AppState {
     pub market_status: SharedMarketStatus,
     pub indices: IndexStore,
     pub fno: RwLock<Vec<FnoIndex>>,
-    pub chain: Mutex<Option<ChainHandle>>,
+    /// Running option chains, one per window (key = window label).
+    pub chain: Mutex<HashMap<String, ChainHandle>>,
     pub recorder: Arc<Recorder>,
     /// Latest option prices from whichever stream is running.
     pub ltp: Arc<LtpStore>,

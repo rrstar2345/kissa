@@ -6,6 +6,8 @@
   import { quotes } from '$lib/quotes.svelte';
   import { theme } from '$lib/theme.svelte';
   import { trading } from '$lib/trading.svelte';
+  import { api } from '$lib/api';
+  import { isPopout } from '$lib/windowing';
   import { num, signed, trend } from '$lib/format';
   import KillSwitch from '$lib/components/KillSwitch.svelte';
   import TopBarPnl from '$lib/components/TopBarPnl.svelte';
@@ -27,6 +29,16 @@
     { href: '/settings', label: 'Settings', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z' }
   ];
 
+  const popError = $state({ msg: '' });
+  async function popOut(item: { href: string; label: string }) {
+    popError.msg = '';
+    try {
+      await api.openWindow(item.href, item.label);
+    } catch (e) {
+      popError.msg = String(e);
+    }
+  }
+
   const watch = ['NIFTY 50', 'NIFTY BANK', 'INDIA VIX'];
 
   onMount(() => {
@@ -43,10 +55,16 @@
 
   const active = (href: string) =>
     href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
+  /** Page name for an extra window's title bar and header. */
+  const pageLabel = $derived(nav.find((n) => active(n.href))?.label ?? 'KISSA');
+  $effect(() => {
+    if (isPopout) api.setWindowTitle(`KISSA - ${pageLabel}`).catch(() => {});
+  });
   const live = $derived(market.status?.streams.some((s) => s.state === 'connected'));
 </script>
 
 <div class="flex h-screen bg-base-200 text-base-content">
+  {#if !isPopout}
   <aside class="flex w-52 shrink-0 flex-col border-r border-base-300 bg-base-100">
     <div class="flex items-center gap-2 px-4 py-4">
       <div class="grid size-8 place-items-center rounded-lg bg-primary text-sm font-black text-primary-content">K</div>
@@ -54,11 +72,19 @@
     </div>
     <ul class="menu w-full gap-0.5 px-2">
       {#each nav as item}
-        <li>
+        <li class="group relative">
           <a href={item.href} class:menu-active={active(item.href)}>
             <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d={item.icon} /></svg>
             {item.label}
           </a>
+          <button
+            class="btn btn-ghost btn-xs absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 p-0 group-hover:flex"
+            title="Open {item.label} in a new window"
+            aria-label="Open {item.label} in a new window"
+            onclick={() => popOut(item)}
+          >
+            <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" /></svg>
+          </button>
         </li>
       {/each}
     </ul>
@@ -68,9 +94,13 @@
       </button>
     </div>
   </aside>
+  {/if}
 
   <div class="flex min-w-0 flex-1 flex-col">
     <header class="flex items-center gap-5 border-b border-base-300 bg-base-100 px-5 py-2 text-sm">
+      {#if isPopout}
+        <span class="text-sm font-bold tracking-wide">{pageLabel}</span>
+      {/if}
       {#each watch as name}
         {@const t = market.indices[name]}
         <div class="flex items-baseline gap-2">
@@ -114,6 +144,9 @@
       </div>
     </header>
 
+    {#if popError.msg}
+      <div class="alert alert-error alert-soft mx-5 mt-3 py-2 text-sm">{popError.msg}</div>
+    {/if}
     <main class="min-h-0 flex-1 overflow-auto p-5">
       {@render children()}
     </main>

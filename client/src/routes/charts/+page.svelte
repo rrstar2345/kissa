@@ -1,7 +1,8 @@
 <script lang="ts">
   import { every } from '$lib/timers';
   import { onMount } from 'svelte';
-  import { api, getJson, setJson } from '$lib/api';
+  import { api } from '$lib/api';
+  import { getScoped, setScoped } from '$lib/windowing';
   import { INDICATOR_PRESETS, indexKey, optionKey } from '$lib/charts';
   import type { ChartsLayout, InstrumentList, PanelConfig, Position, Ruleset } from '$lib/types';
   import ChartPanel from '$lib/components/ChartPanel.svelte';
@@ -24,7 +25,7 @@
 
   onMount(() => {
     (async () => {
-      const saved = await getJson<ChartsLayout | null>(LAYOUT_KEY, null);
+      const saved = await getScoped<ChartsLayout | null>(LAYOUT_KEY, null);
       layout = saved?.panels?.length ? saved : { cols: 1, panels: [newPanel(indexKey('NIFTY 50'))] };
       ready = true;
       await refreshList();
@@ -41,7 +42,7 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   function save() {
     if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => setJson(LAYOUT_KEY, $state.snapshot(layout)), 400);
+    saveTimer = setTimeout(() => setScoped(LAYOUT_KEY, $state.snapshot(layout)), 400);
   }
 
   function updatePanel(i: number, c: PanelConfig) {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, getJson, setJson } from '$lib/api';
+  import { api } from '$lib/api';
+  import { getScoped, setScoped } from '$lib/windowing';
   import { indexKey } from '$lib/charts';
   import { num, signed, trend } from '$lib/format';
   import type { BacktestReport, BacktestRequest, InstrumentList, Ruleset } from '$lib/types';
@@ -62,7 +63,7 @@
 
   onMount(() => {
     (async () => {
-      const saved = await getJson<Partial<Form> | null>(KEY, null);
+      const saved = await getScoped<Partial<Form> | null>(KEY, null);
       if (saved) form = { ...form, ...saved };
       rulesets = await api.listRulesets().catch(() => []);
       if (!rulesets.some((r) => r.id === form.rulesetId)) form.rulesetId = rulesets[0]?.id ?? '';
@@ -100,7 +101,7 @@
     };
     try {
       report = await api.runBacktest(req);
-      setJson(KEY, $state.snapshot(form));
+      setScoped(KEY, $state.snapshot(form));
     } catch (e) {
       error = String(e);
       report = null;

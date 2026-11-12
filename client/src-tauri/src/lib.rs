@@ -8,6 +8,7 @@ mod commands;
 mod db;
 mod emit_stats;
 mod market;
+mod popout;
 mod secrets;
 mod settings;
 mod state;
@@ -34,6 +35,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(popout::on_window_event)
         .setup(|app| {
             let paths = settings::setup_app_folders()?;
             let config = settings::load_or_create_config(&paths)?;
@@ -59,13 +61,15 @@ pub fn run() {
                 market_status,
                 indices: new_index_store(),
                 fno: RwLock::new(Vec::new()),
-                chain: Mutex::new(None),
+                chain: Mutex::new(std::collections::HashMap::new()),
                 recorder: charts::recorder::Recorder::new(pool.clone()),
                 ltp,
                 trading: trading_svc.clone(),
                 alerts,
             });
             app.manage(state.clone());
+            // Pop-out windows left open last time.
+            popout::restore(app.handle().clone());
 
             // Orders: paper matching, Dhan live updates, and the background
             // price feed for open positions / pending paper orders.
@@ -253,6 +257,8 @@ pub fn run() {
             commands::get_server_settings,
             commands::save_server_settings,
             commands::test_server,
+            popout::open_window,
+            popout::set_window_title,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -132,19 +132,23 @@ pub async fn list_expiries(source: String, symbol: String, state: State<'_, Shar
 #[tauri::command]
 pub async fn start_chain(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, SharedState>,
     source: String,
     symbol: String,
     expiry: ExpiryItem,
 ) -> Res<()> {
+    // One chain per window: starting replaces only this window's chain.
+    let label = window.label().to_string();
     let mut slot = state.chain.lock().await;
-    if let Some(old) = slot.take() {
-        old.stop(&state.stats).await;
+    if let Some(old) = slot.remove(&label) {
+        runner::stop_handle(&state.stats, &slot, old).await;
     }
     let handle = if source == "fyers" {
         let creds = active_fyers_creds(&state).await.map_err(err)?;
         runner::spawn_fyers(
             app,
+            label.clone(),
             state.config.clone(),
             creds,
             state.market_status.clone(),
@@ -164,6 +168,7 @@ pub async fn start_chain(
             .unwrap_or_default();
         runner::spawn_nse(
             app,
+            label.clone(),
             state.config.clone(),
             state.stats.clone(),
             state.session.clone(),
@@ -176,15 +181,13 @@ pub async fn start_chain(
         )
         .map_err(err)?
     };
-    *slot = Some(handle);
+    slot.insert(label, handle);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn stop_chain(state: State<'_, SharedState>) -> Res<()> {
-    if let Some(h) = state.chain.lock().await.take() {
-        h.stop(&state.stats).await;
-    }
+pub async fn stop_chain(window: tauri::WebviewWindow, state: State<'_, SharedState>) -> Res<()> {
+    runner::stop_window_chain(&state, window.label()).await;
     Ok(())
 }
 

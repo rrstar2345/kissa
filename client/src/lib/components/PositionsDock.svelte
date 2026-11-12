@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, getJson, setJson } from '$lib/api';
+  import { api } from '$lib/api';
+  import { getScoped, setScoped } from '$lib/windowing';
   import { num, signed, trend } from '$lib/format';
   import { livePosition } from '$lib/live';
   import { every } from '$lib/timers';
@@ -48,14 +49,14 @@
   });
 
   onMount(() => {
-    getJson<boolean>(OPEN_KEY, true).then((v) => (open = v));
+    getScoped<boolean>(OPEN_KEY, true).then((v) => (open = v));
     const t = every(load, 30_000);
     return () => clearInterval(t);
   });
 
   function toggle() {
     open = !open;
-    setJson(OPEN_KEY, open).catch(() => {});
+    setScoped(OPEN_KEY, open).catch(() => {});
   }
 </script>
 

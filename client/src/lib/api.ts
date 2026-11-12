@@ -46,6 +46,8 @@ export const api = {
   startChain: (source: Source, symbol: string, expiry: ExpiryItem) =>
     invoke<void>('start_chain', { source, symbol, expiry }),
   stopChain: () => invoke<void>('stop_chain'),
+  openWindow: (route: string, title?: string) => invoke<string>('open_window', { route, title }),
+  setWindowTitle: (title: string) => invoke<void>('set_window_title', { title }),
 
   getChart: (
     instrument: string,

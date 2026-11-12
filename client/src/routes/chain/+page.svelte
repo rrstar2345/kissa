@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { api, getJson, setJson } from '$lib/api';
+  import { api } from '$lib/api';
+  import { getScoped, setScoped } from '$lib/windowing';
   import { DEFAULT_VISIBLE, STRIKE_WINDOWS } from '$lib/columns';
   import { compact, num, signed, trend } from '$lib/format';
   import { market } from '$lib/market.svelte';
@@ -43,9 +44,9 @@
       })
     );
     source = (await api.getSetting('data.source').catch(() => null)) === 'fyers' ? 'fyers' : 'nse';
-    visible = await getJson('chain.columns', [...DEFAULT_VISIBLE]);
-    strikeWindow = await getJson('chain.window', 10);
-    symbol = await getJson('chain.symbol', 'NIFTY');
+    visible = await getScoped('chain.columns', [...DEFAULT_VISIBLE]);
+    strikeWindow = await getScoped('chain.window', 10);
+    symbol = await getScoped('chain.symbol', 'NIFTY');
     symbols = await api.listFnoSymbols().catch(() => ['NIFTY', 'BANKNIFTY']);
     if (!symbols.includes(symbol)) symbol = symbols[0] ?? 'NIFTY';
     await loadExpiries();
@@ -101,7 +102,7 @@
   }
 
   async function pickSymbol() {
-    await setJson('chain.symbol', symbol).catch(() => {});
+    await setScoped('chain.symbol', symbol).catch(() => {});
     await loadExpiries();
   }
 
@@ -114,7 +115,7 @@
         return;
       }
       symbol = p.symbol;
-      await setJson('chain.symbol', symbol).catch(() => {});
+      await setScoped('chain.symbol', symbol).catch(() => {});
       await loadExpiries(p.expiry);
     } else if (expiry?.date !== p.expiry) {
       const e = expiries.find((x) => x.date === p.expiry);
@@ -127,8 +128,8 @@
     }
   }
 
-  const saveColumns = () => setJson('chain.columns', visible).catch(() => {});
-  const saveWindow = () => setJson('chain.window', strikeWindow).catch(() => {});
+  const saveColumns = () => setScoped('chain.columns', visible).catch(() => {});
+  const saveWindow = () => setScoped('chain.window', strikeWindow).catch(() => {});
 
   const optionStream = $derived(
     market.status?.streams.find((s) => s.name.startsWith('options:'))

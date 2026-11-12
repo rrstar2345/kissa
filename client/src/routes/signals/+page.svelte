@@ -1,7 +1,8 @@
 <script lang="ts">
   import { every } from '$lib/timers';
   import { onMount } from 'svelte';
-  import { api, getJson, setJson } from '$lib/api';
+  import { api } from '$lib/api';
+  import { getScoped, setScoped } from '$lib/windowing';
   import { indexKey } from '$lib/charts';
   import type { InstrumentList, PanelConfig, Ruleset } from '$lib/types';
   import ChartPanel from '$lib/components/ChartPanel.svelte';
@@ -41,10 +42,10 @@
 
   onMount(() => {
     (async () => {
-      const saved = await getJson<PanelConfig | null>(PANEL_KEY, null);
+      const saved = await getScoped<PanelConfig | null>(PANEL_KEY, null);
       if (saved) panel = { ...saved, id: 'signals', rulesets: [] };
       rulesets = await api.listRulesets().catch(() => []);
-      const sel = await getJson<string>(SELECTED_KEY, '');
+      const sel = await getScoped<string>(SELECTED_KEY, '');
       load(rulesets.find((r) => r.id === sel) ?? rulesets[0] ?? null);
       ready = true;
       list = await api.listChartInstruments().catch(() => list);
@@ -57,7 +58,7 @@
     if (r) {
       current = clone(r);
       savedJson = JSON.stringify(current);
-      setJson(SELECTED_KEY, r.id);
+      setScoped(SELECTED_KEY, r.id);
     } else {
       current = blank();
       savedJson = '';
@@ -133,7 +134,7 @@
   function onPanel(c: PanelConfig) {
     panel = { ...c, rulesets: [] };
     if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => setJson(PANEL_KEY, $state.snapshot(panel)), 400);
+    saveTimer = setTimeout(() => setScoped(PANEL_KEY, $state.snapshot(panel)), 400);
   }
 </script>
 
