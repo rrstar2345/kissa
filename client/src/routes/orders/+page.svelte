@@ -2,7 +2,7 @@
   import { every } from '$lib/timers';
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { replaceState } from '$app/navigation';
+  import { goto } from '$app/navigation';
   import { api } from '$lib/api';
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
@@ -23,7 +23,9 @@
     const t = page.url.searchParams.get('tab');
     return TABS.find((x) => x === t) ?? 'orders';
   });
-  const setTab = (t: Tab) => replaceState(`?tab=${t}`, page.state);
+  // `goto` (not shallow `replaceState`) so `page.url` changes and `tab` re-derives.
+  const setTab = (t: Tab) =>
+    goto(`${page.url.pathname}?tab=${t}`, { replaceState: true, noScroll: true, keepFocus: true });
   let orders = $state.raw<OrderRow[]>([]);
   let trades = $state.raw<TradeRow[]>([]);
   let basePositions = $state.raw<Position[]>([]);
