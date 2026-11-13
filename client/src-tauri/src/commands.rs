@@ -154,6 +154,7 @@ pub async fn start_chain(
             state.market_status.clone(),
             state.recorder.clone(),
             state.ltp.clone(),
+            state.fyers_hub.clone(),
             symbol,
             expiry,
         )

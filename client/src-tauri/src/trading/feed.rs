@@ -28,6 +28,7 @@ use crate::charts::instrument::option_key;
 use crate::db;
 use crate::market::events::{IndexStore, OptionTick};
 use crate::market::market_clock;
+use crate::market::status::SourceStatus;
 use crate::market::streamers::options;
 use crate::market::symbols;
 use crate::state::SharedState;
@@ -184,6 +185,20 @@ async fn start(state: &SharedState, target: &Target) -> Option<Feed> {
     Some(Feed { tasks: vec![streamer, reader], stats_key: Some(stats_key) })
 }
 
+async fn lookup_epoch(state: &SharedState, creds: &FyersCreds, symbol: &str, expiry_iso: &str) -> Option<String> {
+    match fyers::fetch(&state.config.fyers, creds, symbol, 1, None).await {
+        Ok(d) => fyers::expiries(&d).into_iter().find(|e| e.date == expiry_iso).map(|e| e.value),
+        Err(e) => {
+            debug!("Price feed: expiry lookup failed: {e}");
+            None
+        }
+    }
+}
+
+fn open_now(st: &SourceStatus) -> bool {
+    st.allows_polling(market_clock::is_within_trading_window(market_clock::get_ist_now()))
+}
+
 async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expiry_iso: String) {
     let cfg = state.config.clone();
     let rec = Recording::new(&state, &symbol).await;
@@ -191,22 +206,42 @@ async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expir
     // Set once the closed-market prices have been fetched: no more API calls
     // until Fyers reports the market open.
     let mut fetched_closed = false;
+    // After a socket failure, REST polling runs until this time.
+    let mut socket_retry_at: Option<tokio::time::Instant> = None;
     loop {
         // Subscribe before reading the status, so a change right after is not missed.
         let mut changes = state.market_status.subscribe_fyers();
-        let polling = changes
-            .borrow_and_update()
-            .allows_polling(market_clock::is_within_trading_window(market_clock::get_ist_now()));
+        let polling = open_now(&changes.borrow_and_update());
+
+        if cfg.fyers.use_socket
+            && polling
+            && socket_retry_at.is_none_or(|t| tokio::time::Instant::now() >= t)
+        {
+            if epoch.is_none() {
+                epoch = lookup_epoch(&state, &creds, &symbol, &expiry_iso).await;
+            }
+            if let Some(ep) = &epoch {
+                let began = tokio::time::Instant::now();
+                match live_feed(&state, &creds, &symbol, &expiry_iso, ep, &rec).await {
+                    Ok(()) => {
+                        fetched_closed = false;
+                        if began.elapsed() < Duration::from_secs(1) {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        debug!("Price feed {symbol}: socket unavailable ({e}); polling over REST");
+                        socket_retry_at = Some(tokio::time::Instant::now() + Duration::from_secs(60));
+                    }
+                }
+            }
+        }
 
         if polling || !fetched_closed {
             let mut ok = false;
             if epoch.is_none() {
-                match fyers::fetch(&cfg.fyers, &creds, &symbol, 1, None).await {
-                    Ok(d) => {
-                        epoch = fyers::expiries(&d).into_iter().find(|e| e.date == expiry_iso).map(|e| e.value);
-                    }
-                    Err(e) => debug!("Price feed: expiry lookup failed: {e}"),
-                }
+                epoch = lookup_epoch(&state, &creds, &symbol, &expiry_iso).await;
             }
             if let Some(ep) = &epoch {
                 match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(ep.as_str())).await {
@@ -238,6 +273,102 @@ async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expir
             // change; re-check hourly, or in 5 minutes after a failed fetch.
             let wait = Duration::from_secs(if fetched_closed { 3600 } else { 300 });
             let _ = tokio::time::timeout(wait, changes.changed()).await;
+        }
+    }
+}
+
+/// Streams one (symbol, expiry) over the data socket into the price store and
+/// chart recorder until the market closes (`Ok`) or the socket stays down
+/// (`Err`). The chain call is repeated every `fyers.chain_refresh_secs` to
+/// follow the strike list.
+async fn live_feed(
+    state: &SharedState,
+    creds: &FyersCreds,
+    symbol: &str,
+    expiry_iso: &str,
+    epoch: &str,
+    rec: &Recording,
+) -> anyhow::Result<()> {
+    let fy = &state.config.fyers;
+    let data = fyers::fetch(fy, creds, symbol, fy.strike_count, Some(epoch)).await?;
+    let mut plan = fyers::stream_plan(fy, creds, &data).await;
+    if plan.options.is_empty() {
+        return Err(anyhow::anyhow!("the chain response has no streamable contracts"));
+    }
+    for c in plan.options.values() {
+        if let Some(px) = c.ltp {
+            state.ltp.set(&option_key(symbol, expiry_iso, c.strike, c.is_call), px);
+        }
+    }
+    let mut spot: Option<f64> = plan.underlying.as_ref().and_then(|(_, u)| u.ltp).filter(|p| *p > 0.0);
+
+    let hub = &state.fyers_hub;
+    let mut rx = hub.subscribe();
+    let lease = hub.lease();
+    lease.set(plan.topics());
+    let hub_status = hub.status();
+    let mut changes = state.market_status.subscribe_fyers();
+    let _ = changes.borrow_and_update();
+
+    let every = Duration::from_secs(fy.chain_refresh_secs.max(10));
+    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut health = tokio::time::interval(Duration::from_secs(2));
+    health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut down_since: Option<tokio::time::Instant> = None;
+
+    loop {
+        tokio::select! {
+            t = rx.recv() => {
+                let t = match t {
+                    Ok(t) => t,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err(anyhow::anyhow!("socket hub stopped"));
+                    }
+                };
+                if plan.underlying.as_ref().is_some_and(|(u, _)| u.eq_ignore_ascii_case(&t.topic)) {
+                    spot = t.ltp.filter(|p| *p > 0.0).or(spot);
+                } else if let Some(c) = plan.options.get(&t.topic) {
+                    let Some(px) = t.ltp else { continue };
+                    let key = option_key(symbol, expiry_iso, c.strike, c.is_call);
+                    state.ltp.set(&key, px);
+                    let atm = spot.map(|s| atm_strike(s, rec.step)).or_else(|| rec.atm());
+                    let in_window = atm.is_some_and(|a| rec.in_window(a, c.strike));
+                    if in_window || rec.recorder.is_pinned(&key) {
+                        rec.recorder.record(&key, market_clock::get_ist_now().timestamp(), px, t.volume, t.oi);
+                    }
+                }
+            }
+            _ = health.tick() => {
+                let (connected, err) = {
+                    let s = hub_status.borrow();
+                    (s.connected, s.error.clone())
+                };
+                if connected {
+                    down_since = None;
+                } else {
+                    let since = *down_since.get_or_insert_with(tokio::time::Instant::now);
+                    if since.elapsed() > Duration::from_secs(20) {
+                        return Err(anyhow::anyhow!(err.unwrap_or_else(|| "not connected".into())));
+                    }
+                }
+            }
+            _ = refresh.tick() => {
+                if let Ok(d) = fyers::fetch(fy, creds, symbol, fy.strike_count, Some(epoch)).await {
+                    let np = fyers::stream_plan(fy, creds, &d).await;
+                    if !np.options.is_empty() {
+                        plan = np;
+                        lease.set(plan.topics());
+                    }
+                }
+            }
+            _ = changes.changed() => {
+                let ok = open_now(&changes.borrow_and_update());
+                if !ok {
+                    return Ok(());
+                }
+            }
         }
     }
 }

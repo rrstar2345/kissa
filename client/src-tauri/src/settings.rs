@@ -125,6 +125,17 @@ pub struct FyersConfig {
     pub poll_secs: u64,
     /// Strikes each side of ATM requested from Fyers (max 50).
     pub strike_count: u32,
+    /// Stream prices over the Fyers data socket. Off = REST polling only.
+    pub use_socket: bool,
+    /// Data socket URL (binary HSM protocol).
+    pub socket_url: String,
+    /// Symbol to token lookup, used when the chain response has no `fyToken`.
+    pub symbol_token_url: String,
+    /// Most symbols subscribed at once: 100 on the Standard plan, 5000 on Prime.
+    pub max_symbols: usize,
+    /// While the socket streams, seconds between chain calls that refresh the
+    /// strike list and open interest.
+    pub chain_refresh_secs: u64,
 }
 
 impl Default for FyersConfig {
@@ -137,6 +148,11 @@ impl Default for FyersConfig {
             status_url: "https://api-t1.fyers.in/data/marketStatus".into(),
             poll_secs: 5,
             strike_count: 25,
+            use_socket: true,
+            socket_url: "wss://socket.fyers.in/hsm/v1-5/prod".into(),
+            symbol_token_url: "https://api-t1.fyers.in/data/symbol-token".into(),
+            max_symbols: 100,
+            chain_refresh_secs: 60,
         }
     }
 }

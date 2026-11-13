@@ -66,6 +66,7 @@ pub fn run() {
                 ltp,
                 trading: trading_svc.clone(),
                 alerts,
+                fyers_hub: market::fyers_socket::Hub::new(config.fyers.clone()),
             });
             app.manage(state.clone());
             // Pop-out windows left open last time.
@@ -187,6 +188,9 @@ pub fn run() {
                 }
                 index_wake.notify_one();
             });
+            // Fyers data socket and its index bridge (idle unless Fyers is the data source).
+            state.fyers_hub.spawn(state.clone());
+            market::fyers_socket::bridge::spawn(state.clone(), sink.clone());
             tauri::async_runtime::spawn(streamers::indices::run(
                 config,
                 state.stats.clone(),

@@ -27,6 +27,8 @@ pub struct ChainEngine {
     expiry_label: String,
     expiry: NaiveDate,
     rate: f64,
+    /// Data source name reported in snapshots ("nse" or "fyers").
+    source: String,
     rows: BTreeMap<i64, StrikeRow>,
     /// First OI seen per (strike, is_call) this session; used when NSE
     /// doesn't send an OI change.
@@ -35,7 +37,11 @@ pub struct ChainEngine {
 
 impl ChainEngine {
     pub fn new(symbol: String, expiry_label: String, expiry: NaiveDate, rate: f64) -> Self {
-        Self { symbol, expiry_label, expiry, rate, rows: BTreeMap::new(), oi_base: HashMap::new() }
+        Self { symbol, expiry_label, expiry, rate, source: "nse".into(), rows: BTreeMap::new(), oi_base: HashMap::new() }
+    }
+
+    pub fn set_source(&mut self, source: &str) {
+        self.source = source.to_string();
     }
 
     pub fn apply(&mut self, tick: OptionTick) {
@@ -111,7 +117,7 @@ impl ChainEngine {
         let put_oi: f64 = rows.iter().filter_map(|r| r.pe.oi).sum();
 
         ChainSnapshot {
-            source: "nse".into(),
+            source: self.source.clone(),
             symbol: self.symbol.clone(),
             expiry: self.expiry_label.clone(),
             underlying_name: spot.map(|s| s.index_name.clone()),

@@ -4,11 +4,13 @@
 use anyhow::{anyhow, Result};
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use super::engine::years_to_expiry;
 use super::greeks;
 use super::{pct, ChainSnapshot, ExpiryItem, Leg, StrikeRow};
+use crate::market::fyers_socket::topics;
 use crate::settings::FyersConfig;
 
 pub struct FyersCreds {
@@ -59,6 +61,8 @@ struct Item {
     option_type: String,
     strike_price: Option<f64>,
     symbol: String,
+    #[serde(rename = "fyToken")]
+    fy_token: String,
     greeks: Option<G>,
 }
 
@@ -209,5 +213,137 @@ pub fn to_snapshot(data: &Data, symbol: &str, expiry: &ExpiryItem, rate: f64) ->
         greeks_source: if any_broker_greeks { "broker" } else { "computed" }.into(),
         updated_at: Utc::now().to_rfc3339(),
         rows,
+    }
+}
+
+// ------------------------------------------------- streaming (data socket) ---
+
+/// One option contract of the chain, as the REST call reported it.
+#[derive(Debug, Clone)]
+pub struct Contract {
+    pub symbol: String,
+    pub fytoken: String,
+    pub strike: f64,
+    pub is_call: bool,
+    pub ltp: Option<f64>,
+    pub change: Option<f64>,
+    pub oi: Option<f64>,
+    pub oich: Option<f64>,
+    pub volume: Option<f64>,
+    pub bid: Option<f64>,
+    pub ask: Option<f64>,
+}
+
+/// The underlying row of the chain call.
+#[derive(Debug, Clone)]
+pub struct Under {
+    pub symbol: String,
+    pub fytoken: String,
+    pub ltp: Option<f64>,
+    pub change: Option<f64>,
+}
+
+pub fn contracts(data: &Data) -> Vec<Contract> {
+    data.options_chain
+        .iter()
+        .filter(|i| i.option_type == "CE" || i.option_type == "PE")
+        .filter_map(|i| {
+            Some(Contract {
+                symbol: i.symbol.clone(),
+                fytoken: i.fy_token.clone(),
+                strike: i.strike_price?,
+                is_call: i.option_type == "CE",
+                ltp: i.ltp,
+                change: i.ltpch,
+                oi: i.oi,
+                oich: i.oich,
+                volume: i.volume,
+                bid: i.bid,
+                ask: i.ask,
+            })
+        })
+        .collect()
+}
+
+pub fn underlying(data: &Data) -> Option<Under> {
+    data.options_chain.iter().find(|i| i.option_type.is_empty()).map(|u| Under {
+        symbol: u.symbol.clone(),
+        fytoken: u.fy_token.clone(),
+        ltp: u.ltp,
+        change: u.ltpch,
+    })
+}
+
+pub fn vix_ltp(data: &Data) -> Option<f64> {
+    data.vix.as_ref().and_then(|v| v.ltp)
+}
+
+/// What to subscribe on the data socket for one chain.
+pub struct StreamPlan {
+    /// Option contracts by socket topic (`sf|nse_fo|<token>`).
+    pub options: HashMap<String, Contract>,
+    /// Underlying and its socket topic (original case: index names are case-sensitive).
+    pub underlying: Option<(String, Under)>,
+    pub vix_topic: Option<String>,
+}
+
+impl StreamPlan {
+    /// Topics in subscription priority: indices, then strikes nearest the spot.
+    pub fn topics(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let spot = self.underlying.as_ref().and_then(|(_, u)| u.ltp).unwrap_or(0.0);
+        if let Some((t, _)) = &self.underlying {
+            out.push(t.clone());
+        }
+        out.extend(self.vix_topic.clone());
+        let mut opts: Vec<(&String, f64)> =
+            self.options.iter().map(|(t, c)| (t, (c.strike - spot).abs())).collect();
+        opts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        out.extend(opts.into_iter().map(|(t, _)| t.clone()));
+        out
+    }
+}
+
+/// Works out the socket topics for a chain response. Contracts without a
+/// `fyToken` are resolved through the symbol-token API (best effort: those
+/// that cannot be resolved just keep their REST prices).
+pub async fn stream_plan(cfg: &FyersConfig, creds: &FyersCreds, data: &Data) -> StreamPlan {
+    let mut options = HashMap::new();
+    let mut missing: Vec<Contract> = Vec::new();
+    for c in contracts(data) {
+        match topics::token_topic(&c.fytoken) {
+            Some(t) => {
+                options.insert(t, c);
+            }
+            None => missing.push(c),
+        }
+    }
+    let under = underlying(data);
+    let mut under_topic = under.as_ref().and_then(|u| {
+        if u.symbol.ends_with("-INDEX") { topics::index_topic(&u.symbol) } else { topics::token_topic(&u.fytoken) }
+    });
+    let mut need: Vec<String> = missing.iter().map(|c| c.symbol.clone()).collect();
+    if let (Some(u), None) = (&under, &under_topic) {
+        need.push(u.symbol.clone());
+    }
+    if !need.is_empty() {
+        match topics::resolve(cfg, creds, &need).await {
+            Ok(map) => {
+                for c in missing {
+                    if let Some(t) = map.get(&c.symbol) {
+                        options.insert(t.clone(), c);
+                    }
+                }
+                if under_topic.is_none() {
+                    under_topic = under.as_ref().and_then(|u| map.get(&u.symbol).cloned());
+                }
+            }
+            Err(e) => tracing::warn!("Fyers socket: {e}"),
+        }
+    }
+    StreamPlan {
+        options,
+        underlying: under_topic.zip(under),
+        vix_topic: topics::index_topic(topics::VIX_SYMBOL),
     }
 }

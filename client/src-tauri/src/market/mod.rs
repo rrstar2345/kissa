@@ -4,6 +4,7 @@
 //! through channels/callbacks so the chain engine and UI can consume them.
 
 pub mod events;
+pub mod fyers_socket;
 pub mod http;
 pub mod market_clock;
 pub mod status;
