@@ -121,9 +121,10 @@ pub async fn run(
                 if session.known_idle(false) {
                     // NSE says the market is closed: no polling. Connect only to put the
                     // last prices in the header (a few tries at most, and only while no
-                    // price has arrived yet), then wait for a status change.
+                    // price has arrived yet), then wait for a status change. With Fyers
+                    // as the data source NSE is not called at all, not even for this.
                     let have_prices = super::ticks_received(&stats, STREAM_NAME).await > 0;
-                    if !have_prices && seed_attempts < 3 {
+                    if session.nse_enabled() && !have_prices && seed_attempts < 3 {
                         seed_attempts += 1;
                         if let Err(e) = poll_once(&config, &stats, &session, &sink).await {
                             debug!("Indices price seed error (market closed): {}", e);

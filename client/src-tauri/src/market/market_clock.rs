@@ -12,6 +12,11 @@
 //!
 //! The indices stream follows `mode()` (index values exist during pre-open);
 //! option streams follow `options_mode()` (options trade from 9:15 only).
+//!
+//! This is the *NSE* session. It applies only while NSE is the selected data
+//! source: with Fyers selected the mode is always `Idle` and no NSE stream
+//! connects at all (`nse_enabled`). Fyers has its own socket supervisor
+//! (`fyers_socket`).
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc};
@@ -21,7 +26,7 @@ use tokio::sync::{watch, RwLock};
 use tracing::warn;
 
 use crate::market::http;
-use crate::market::status::{MarketState, SharedMarketStatus, SourceStatus};
+use crate::market::status::{DataSource, MarketState, SharedMarketStatus, SourceStatus};
 use crate::settings::AppConfig;
 
 #[derive(Debug, Deserialize)]
@@ -233,8 +238,17 @@ impl SessionState {
         }
     }
 
+    /// True while NSE is the selected data source. With Fyers selected the
+    /// NSE streams neither connect nor poll, whatever the clock says.
+    pub fn nse_enabled(&self) -> bool {
+        self.status.source() == DataSource::Nse
+    }
+
     /// Mode for the indices stream: Active through pre-open and the session.
     pub async fn mode(&self) -> SessionMode {
+        if !self.nse_enabled() {
+            return SessionMode::Idle;
+        }
         self.inner.read().await.mode
     }
 
@@ -252,10 +266,13 @@ impl SessionState {
         self.status.subscribe_nse()
     }
 
-    /// True when NSE has said there is nothing to stream, so an idle stream
-    /// should not even connect: the market is closed, or (for option streams)
-    /// still in pre-open.
+    /// True when there is nothing to stream, so an idle stream should not
+    /// even connect: NSE is not the selected data source, or it has said the
+    /// market is closed, or (for option streams) it is still in pre-open.
     pub fn known_idle(&self, options: bool) -> bool {
+        if !self.nse_enabled() {
+            return true;
+        }
         match self.status.nse_state() {
             MarketState::Closed => true,
             MarketState::PreOpen => options,
@@ -265,11 +282,11 @@ impl SessionState {
 
     /// Record a real (non-heartbeat) tick. Switches to Active if we were
     /// Idle (e.g. an off-hours poll unexpectedly saw live data), unless NSE
-    /// has said the market is closed.
+    /// has said the market is closed or is not the selected data source.
     pub async fn record_activity(&self) {
         let mut inner = self.inner.write().await;
         inner.last_activity_at = get_ist_now();
-        if self.status.nse_state() != MarketState::Closed {
+        if self.nse_enabled() && self.status.nse_state() != MarketState::Closed {
             inner.mode = SessionMode::Active;
         }
     }
@@ -289,11 +306,13 @@ impl SessionState {
 
     async fn recompute(&self, nse: MarketState, inactive_switch_after_secs: i64) -> SessionMode {
         let now = get_ist_now();
+        let enabled = self.nse_enabled();
         let mut guard = self.inner.write().await;
         let inner = &mut *guard;
         let quiet = now.signed_duration_since(inner.last_activity_at).num_seconds();
+        // Fyers selected: the NSE session is off, as if outside the trading window.
         let next = next_mode(
-            is_within_trading_window(now),
+            enabled && is_within_trading_window(now),
             nse,
             inner.mode,
             quiet,
@@ -353,6 +372,20 @@ mod tests {
             mode = next_mode(true, MarketState::Closed, mode, 0, HOUR, &mut entered);
             assert_eq!(mode, SessionMode::Idle);
         }
+    }
+
+    #[tokio::test]
+    async fn fyers_as_the_source_switches_the_nse_session_off() {
+        use crate::market::status::MarketStatusService;
+        let session = SessionState::new(MarketStatusService::new(DataSource::Fyers));
+        assert!(!session.nse_enabled());
+        assert_eq!(session.tick(HOUR).await, SessionMode::Idle);
+        // Nothing connects, not even for the idle price seed, and a stray tick cannot wake it.
+        assert!(session.known_idle(false));
+        assert!(session.known_idle(true));
+        session.record_activity().await;
+        assert_eq!(session.mode().await, SessionMode::Idle);
+        assert_eq!(session.options_mode().await, SessionMode::Idle);
     }
 
     #[test]

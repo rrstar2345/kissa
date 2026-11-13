@@ -17,7 +17,7 @@ pub mod topics;
 use anyhow::{anyhow, Result};
 use futures::{SinkExt, StreamExt};
 use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
@@ -26,9 +26,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{info, warn};
 
-use crate::db;
 use crate::market::market_clock;
-use crate::market::status::SourceStatus;
+use crate::market::status::{DataSource, SourceStatus};
 use crate::settings::FyersConfig;
 use crate::state::SharedState;
 use proto::{Decoder, Incoming};
@@ -59,6 +58,9 @@ pub struct Hub {
     changed: Notify,
     next_owner: AtomicU64,
     status: watch::Sender<SocketStatus>,
+    /// Unix ms of the last decoded tick on the current connection (0 = none yet).
+    /// Kept apart from `status`, which would wake its watchers on every tick.
+    last_tick_ms: AtomicI64,
 }
 
 /// A consumer's claim on topics; released when dropped (also when its task is aborted).
@@ -89,8 +91,9 @@ fn allowed(st: &SourceStatus) -> bool {
     st.allows_polling(market_clock::is_within_trading_window(market_clock::get_ist_now()))
 }
 
+/// Fyers is the selected data source (the cached `data.source`, no database read).
 async fn fyers_is_source(state: &SharedState) -> bool {
-    db::get_setting(&state.db, "data.source").await.ok().flatten().as_deref() == Some("fyers")
+    state.market_status.source() == DataSource::Fyers
 }
 
 impl Hub {
@@ -104,7 +107,24 @@ impl Hub {
             changed: Notify::new(),
             next_owner: AtomicU64::new(1),
             status,
+            last_tick_ms: AtomicI64::new(0),
         })
+    }
+
+    /// The socket is connected and subscribed.
+    pub fn is_connected(&self) -> bool {
+        self.status.borrow().connected
+    }
+
+    /// The last connection error, until the next successful connection.
+    pub fn last_error(&self) -> Option<String> {
+        self.status.borrow().error.clone()
+    }
+
+    /// Seconds since the last tick on the current connection (`None`: none yet).
+    pub fn last_tick_age_secs(&self) -> Option<i64> {
+        let ms = self.last_tick_ms.load(Ordering::Relaxed);
+        (ms > 0).then(|| (chrono::Utc::now().timestamp_millis() - ms).max(0) / 1000)
     }
 
     /// Every decoded tick. A slow receiver misses ticks (`Lagged`) instead of blocking the socket.
@@ -245,6 +265,7 @@ impl Hub {
         .map_err(|e| anyhow!("connection failed: {e}"))?;
 
         let mut dec = Decoder::new();
+        self.last_tick_ms.store(0, Ordering::Relaxed);
         send(&mut ws, proto::auth_frame(&jwt.hsm_key, "kissa")).await?;
         let ack_every = self.wait_auth(&mut ws, &mut dec).await?;
         info!("Fyers socket connected");
@@ -272,6 +293,9 @@ impl Hub {
                                 info!("fyers rx {} bytes: {:02x?}", b.len(), &b[..b.len().min(48)]);
                             }
                             if let Incoming::Data { msg_no, ticks } = dec.decode(&b) {
+                                if !ticks.is_empty() {
+                                    self.last_tick_ms.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                                }
                                 for t in ticks {
                                     let _ = self.tx.send(t);
                                 }

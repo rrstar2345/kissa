@@ -10,10 +10,11 @@ use crate::charts::{backfill, indicators, resample, store, BackfillResult, Chart
 use crate::chain::{fyers, ExpiryItem};
 use crate::db;
 use crate::market::events::IndexTick;
-use crate::market::status::SourceStatus;
+use crate::market::status::{self, DataSource, SourceStatus};
+use crate::market::streamers::indices::STREAM_NAME as INDICES_STREAM;
 use crate::market::{market_clock, symbols};
 use crate::state::{AppState, SharedState};
-use crate::stats::StreamStat;
+use crate::stats::{ConnState, StreamStat};
 
 type Res<T> = Result<T, String>;
 
@@ -32,14 +33,28 @@ pub struct MarketStatus {
     /// UTC epoch milliseconds (NSE-synced clock) at the time of the snapshot, so
     /// the UI can keep its own clock running between pushes.
     pub now_ms: i64,
-    /// Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use `nse` / `fyers`.
+    /// Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use `exchange`.
     pub within_window: bool,
+    /// ACTIVE while the selected source's feed is connected, else IDLE.
     pub mode: String,
-    /// What each source's exchange status API says (open, pre-open, closed, unknown).
+    /// The selected data source. The header shows this one only.
+    pub source: DataSource,
+    /// The selected source's exchange status (open, pre-open, closed, unknown).
+    pub exchange: SourceStatus,
+    /// Each source's own status; the one that is not selected reads `notUsed`.
     pub nse: SourceStatus,
     pub fyers: SourceStatus,
+    /// Prices are ticking from the selected source in an open session.
+    pub live: bool,
+    /// Short label for the feed indicator (Live, No ticks, Pre-open, Closed, ...).
+    pub feed: String,
+    /// Tooltip for the feed indicator: which stream, and its error if any.
+    pub feed_detail: String,
     pub streams: Vec<StreamStat>,
 }
+
+/// A feed with no real tick for this long is not "live" any more.
+const LIVE_STALE_SECS: i64 = 60;
 
 impl MarketStatus {
     /// Everything the UI shows except the clock and tick counters. The status
@@ -53,8 +68,12 @@ impl MarketStatus {
         serde_json::json!({
             "w": self.within_window,
             "m": &self.mode,
+            "src": &self.source,
             "n": &self.nse,
             "f": &self.fyers,
+            "l": self.live,
+            "fd": &self.feed,
+            "fx": &self.feed_detail,
             "s": streams,
         })
         .to_string()
@@ -66,13 +85,62 @@ pub async fn build_market_status(state: &AppState) -> MarketStatus {
     let ist = now + chrono::Duration::seconds(5 * 3600 + 30 * 60);
     let mut streams: Vec<StreamStat> = state.stats.read().await.streams.values().cloned().collect();
     streams.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let source = state.market_status.source();
+    let exchange = state.market_status.active();
+
+    // The index feed of the selected source: NSE's indices stream, or the Fyers socket.
+    let (connected, ticking, errored, detail) = match source {
+        DataSource::Nse => {
+            let s = streams.iter().find(|s| s.name == INDICES_STREAM);
+            let connected = s.is_some_and(|s| s.state == ConnState::Connected);
+            let age = s
+                .and_then(|s| s.last_tick_at)
+                .map(|t| chrono::Local::now().signed_duration_since(t).num_seconds());
+            let ticking = connected && age.is_some_and(|a| a <= LIVE_STALE_SECS);
+            let errored = s.is_some_and(|s| s.state == ConnState::Reconnecting);
+            let word = match s.map(|s| &s.state) {
+                Some(ConnState::Connected) => "connected",
+                Some(ConnState::Connecting) => "connecting",
+                Some(ConnState::Reconnecting) => "reconnecting",
+                Some(ConnState::Idle) | None => "idle",
+            };
+            let mut detail = format!("NSE index stream: {word}");
+            if let Some(e) = s.and_then(|s| s.last_error.as_deref()).filter(|_| errored) {
+                detail.push_str(&format!(" ({e})"));
+            }
+            (connected, ticking, errored, detail)
+        }
+        DataSource::Fyers => {
+            let hub = &state.fyers_hub;
+            let connected = hub.is_connected();
+            let ticking = connected && hub.last_tick_age_secs().is_some_and(|a| a <= LIVE_STALE_SECS);
+            let error = hub.last_error();
+            let mut detail = format!("Fyers data socket: {}", if connected { "connected" } else { "not connected" });
+            if let Some(e) = &error {
+                detail.push_str(&format!(" ({e})"));
+            }
+            (connected, ticking, error.is_some(), detail)
+        }
+    };
+    let (live, feed) = status::feed_label(exchange.state, connected, ticking, errored, status::is_session_hours(now));
+    let mode = match source {
+        DataSource::Nse => state.session.mode().await.label().to_string(),
+        DataSource::Fyers => (if connected { "ACTIVE" } else { "IDLE" }).to_string(),
+    };
+
     MarketStatus {
         ist_time: format!("{:02}:{:02}:{:02}", ist.hour(), ist.minute(), ist.second()),
         now_ms: now.timestamp_millis(),
         within_window: market_clock::is_within_trading_window(now),
-        mode: state.session.mode().await.label().to_string(),
+        mode,
+        source,
+        exchange,
         nse: state.market_status.nse(),
         fyers: state.market_status.fyers(),
+        live,
+        feed: feed.to_string(),
+        feed_detail: detail,
         streams,
     }
 }
@@ -201,7 +269,12 @@ pub async fn get_setting(key: String, state: State<'_, SharedState>) -> Res<Opti
 
 #[tauri::command]
 pub async fn set_setting(key: String, value: String, state: State<'_, SharedState>) -> Res<()> {
-    db::set_setting(&state.db, &key, &value).await.map_err(err)
+    db::set_setting(&state.db, &key, &value).await.map_err(err)?;
+    if key == "data.source" {
+        // Move the exchange status and the streams over to the new source now.
+        state.market_status.set_source(DataSource::from_setting(Some(&value)));
+    }
+    Ok(())
 }
 
 // -------------------------------------------------------------- accounts ---

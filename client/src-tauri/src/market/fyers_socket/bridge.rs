@@ -1,6 +1,8 @@
 //! Feeds the header indices (and so the chain's underlying lookups and the
-//! index charts) from the Fyers socket while Fyers is the data source.
-//! The NSE index stream keeps running until roadmap #14 gates it by source.
+//! index charts) from the Fyers socket while Fyers is the data source. The
+//! NSE index stream is idle then (`SessionState::nse_enabled`), so the header
+//! shows one source only. While the exchange is closed the socket is down and
+//! the header keeps whatever it last showed (it is empty after a start).
 
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;

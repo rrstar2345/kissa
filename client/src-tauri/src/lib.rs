@@ -51,7 +51,11 @@ pub fn run() {
                 app.handle().clone(),
                 alerts.clone(),
             );
-            let market_status = market::status::MarketStatusService::new();
+            // The saved data source decides which exchange status is polled and which streams run.
+            let source = market::status::DataSource::from_setting(
+                tauri::async_runtime::block_on(db::get_setting(&pool, "data.source")).ok().flatten().as_deref(),
+            );
+            let market_status = market::status::MarketStatusService::new(source);
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
                 paths: paths.clone(),

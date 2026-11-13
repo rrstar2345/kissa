@@ -25,10 +25,9 @@ use crate::chain::runner::find_index;
 use crate::charts::recorder::Recorder;
 use crate::chain::ExpiryItem;
 use crate::charts::instrument::option_key;
-use crate::db;
 use crate::market::events::{IndexStore, OptionTick};
 use crate::market::market_clock;
-use crate::market::status::SourceStatus;
+use crate::market::status::{DataSource, SourceStatus};
 use crate::market::streamers::options;
 use crate::market::symbols;
 use crate::state::SharedState;
@@ -44,9 +43,19 @@ struct Feed {
 pub fn spawn(state: SharedState) {
     tauri::async_runtime::spawn(async move {
         let mut feeds: HashMap<Target, Feed> = HashMap::new();
+        let mut source = state.market_status.source();
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             tick.tick().await;
+            // A feed is bound to the data source it was started for: when the
+            // source changes, stop them all and start them again for the new one.
+            let now_source = state.market_status.source();
+            if now_source != source {
+                source = now_source;
+                for (_, f) in feeds.drain() {
+                    stop(f, &state, true).await;
+                }
+            }
             let needed = needed_targets(&state).await;
             let covered: HashSet<Target> = state.chain.lock().await.values().map(|h| h.target()).collect();
 
@@ -145,12 +154,19 @@ async fn start(state: &SharedState, target: &Target) -> Option<Feed> {
     let (symbol, expiry) = target.clone();
     let date = NaiveDate::parse_from_str(&expiry, "%Y-%m-%d").ok()?;
 
-    let source = db::get_setting(&state.db, "data.source").await.ok().flatten();
-    if source.as_deref() == Some("fyers") {
-        if let Ok(creds) = crate::commands::active_fyers_creds(state).await {
-            let task = tokio::spawn(fyers_loop(state.clone(), creds, symbol, expiry));
-            return Some(Feed { tasks: vec![task], stats_key: None });
-        }
+    if state.market_status.source() == DataSource::Fyers {
+        // Fyers is the data source: never fall back to NSE (its streams are off then).
+        // Without usable credentials there is simply no feed; the Fyers status says why.
+        return match crate::commands::active_fyers_creds(state).await {
+            Ok(creds) => {
+                let task = tokio::spawn(fyers_loop(state.clone(), creds, symbol, expiry));
+                Some(Feed { tasks: vec![task], stats_key: None })
+            }
+            Err(e) => {
+                debug!("Price feed {symbol}: no Fyers credentials ({e}); not using NSE instead");
+                None
+            }
+        };
     }
 
     // NSE: NSE expiry labels look like 24-Nov-2026.

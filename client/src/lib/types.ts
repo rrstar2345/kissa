@@ -84,11 +84,23 @@ export interface MarketStatus {
   istTime: string;
   /** UTC epoch ms of the snapshot (backend, NSE-synced clock); the header clock runs from it. */
   nowMs: number;
-  /** Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use nse / fyers. */
+  /** Clock only (weekday 08:30-16:00 IST); it does not know holidays. Use exchange. */
   withinWindow: boolean;
+  /** ACTIVE while the selected source's feed is connected, else IDLE. */
   mode: string;
+  /** The selected data source; the header shows this one only. */
+  source: 'nse' | 'fyers';
+  /** The selected source's exchange status. */
+  exchange: SourceStatus;
+  /** Each source's own status; the one not selected reads reason 'notUsed'. */
   nse: SourceStatus;
   fyers: SourceStatus;
+  /** Prices are ticking from the selected source in an open session. */
+  live: boolean;
+  /** Feed indicator label: Live, No ticks, Connecting, Error, Pre-open, Closed or Checking. */
+  feed: string;
+  /** Tooltip for the feed indicator: which stream, and its error if any. */
+  feedDetail: string;
   streams: StreamStat[];
 }
 

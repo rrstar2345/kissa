@@ -10,16 +10,20 @@
 //!   window, checks every 5 minutes while the answer is stable (30 s around
 //!   pre-open and the close, 60 s early morning) and stops for the day once
 //!   the market has opened and closed.
+//! - Only the selected data source (`DataSource`, setting `data.source`) is
+//!   polled and streamed; the other one reads `NotUsed` and makes no calls.
 //! - `SessionState` (market_clock.rs) turns the NSE status into the
-//!   streamers' Active/Idle mode. Fyers consumers (chain page, price feed)
-//!   read the Fyers status directly.
+//!   NSE streamers' Active/Idle mode (always Idle when Fyers is the source).
+//!   Fyers consumers (chain page, price feed, socket) read the Fyers status
+//!   directly.
 //! - `Unknown` (never checked, or the API keeps failing) falls back to the
 //!   old clock-window behaviour, so a broken status API is never worse than
 //!   before.
 //!
-//! Index options trade from 09:15 IST. NSE's Capital Market status can read
-//! "Open" during the 09:00-09:08 pre-open session, so an "Open" before 09:15
-//! is reported as `PreOpen` (see `guard_open`).
+//! Index options trade from 09:15 IST and the pre-open session runs
+//! 09:00-09:15. Whatever a source reports, "Open" or "Pre-open" before 09:00
+//! is shown as `Closed`, and "Open" from 09:00 to 09:15 as `PreOpen` (see
+//! `guard_hours`).
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
@@ -32,7 +36,6 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::chain::fyers::FyersCreds;
-use crate::db;
 use crate::market::{http, market_clock};
 use crate::settings::{AppConfig, FyersConfig};
 use crate::state::SharedState;
@@ -42,10 +45,40 @@ use crate::state::SharedState;
 const FYERS_NSE: i64 = 10;
 const FYERS_EQUITY_DERIVATIVES: i64 = 11;
 
+/// The pre-open session starts at 09:00 IST (minutes since midnight).
+const PRE_OPEN_MINUTES: u32 = 9 * 60;
 /// Index options start trading at 09:15 IST (minutes since midnight).
 const OPTIONS_OPEN_MINUTES: u32 = 9 * 60 + 15;
+/// The cash and F&O session ends at 15:30 IST (minutes since midnight).
+const SESSION_END_MINUTES: u32 = 15 * 60 + 30;
 
 // ------------------------------------------------------------------ types ---
+
+/// Where live prices and the exchange status come from (setting `data.source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DataSource {
+    /// NSE public API (the default).
+    Nse,
+    Fyers,
+}
+
+impl DataSource {
+    /// `data.source` value: "fyers" selects Fyers, anything else (or unset) NSE.
+    pub fn from_setting(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(v) if v.eq_ignore_ascii_case("fyers") => DataSource::Fyers,
+            _ => DataSource::Nse,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DataSource::Nse => "NSE",
+            DataSource::Fyers => "Fyers",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,7 +102,7 @@ pub enum Reason {
     Reported,
     /// The status API could not be read.
     Error,
-    /// Fyers is not the selected data source.
+    /// This source is not the selected data source, so it is not checked.
     NotUsed,
 }
 
@@ -93,8 +126,12 @@ impl SourceStatus {
         Self::new(MarketState::Unknown, Reason::Starting, "Checking the exchange status")
     }
 
-    pub fn not_used() -> Self {
-        Self::new(MarketState::Unknown, Reason::NotUsed, "Fyers is not the selected data source")
+    pub fn not_used(source: DataSource) -> Self {
+        Self::new(
+            MarketState::Unknown,
+            Reason::NotUsed,
+            format!("{} is not the selected data source", source.label()),
+        )
     }
 
     fn error(message: impl Into<String>) -> Self {
@@ -108,6 +145,10 @@ impl SourceStatus {
     /// Should a consumer poll this source's market data right now? Unknown
     /// falls back to the clock window, as before the status API existed.
     pub fn allows_polling(&self, in_window: bool) -> bool {
+        // A source that is not selected is never polled, whatever the clock says.
+        if self.reason == Reason::NotUsed {
+            return false;
+        }
         match self.state {
             MarketState::Open => true,
             MarketState::PreOpen | MarketState::Closed => false,
@@ -128,16 +169,26 @@ pub struct Parsed {
 pub struct MarketStatusService {
     nse: watch::Sender<SourceStatus>,
     fyers: watch::Sender<SourceStatus>,
+    /// The selected data source, cached from `data.source`. Kept current by
+    /// `set_source` (the `set_setting` command calls it), so hot paths read it
+    /// without touching the database.
+    source: watch::Sender<DataSource>,
 }
 
 pub type SharedMarketStatus = Arc<MarketStatusService>;
 
 impl MarketStatusService {
-    pub fn new() -> SharedMarketStatus {
-        let initial = clock_status(market_clock::get_ist_now());
-        let (nse, _) = watch::channel(initial.clone());
-        let (fyers, _) = watch::channel(SourceStatus::not_used());
-        Arc::new(Self { nse, fyers })
+    /// `source` is the saved `data.source`; the other source starts as `NotUsed`.
+    pub fn new(source: DataSource) -> SharedMarketStatus {
+        let clock = clock_status(market_clock::get_ist_now());
+        let (nse_init, fyers_init) = match source {
+            DataSource::Nse => (clock, SourceStatus::not_used(DataSource::Fyers)),
+            DataSource::Fyers => (SourceStatus::not_used(DataSource::Nse), clock),
+        };
+        let (nse, _) = watch::channel(nse_init);
+        let (fyers, _) = watch::channel(fyers_init);
+        let (source, _) = watch::channel(source);
+        Arc::new(Self { nse, fyers, source })
     }
 
     pub fn nse(&self) -> SourceStatus {
@@ -146,6 +197,37 @@ impl MarketStatusService {
 
     pub fn fyers(&self) -> SourceStatus {
         self.fyers.borrow().clone()
+    }
+
+    /// The selected data source.
+    pub fn source(&self) -> DataSource {
+        *self.source.borrow()
+    }
+
+    /// Status of the selected data source (what the header badge shows).
+    pub fn active(&self) -> SourceStatus {
+        match self.source() {
+            DataSource::Nse => self.nse(),
+            DataSource::Fyers => self.fyers(),
+        }
+    }
+
+    pub fn subscribe_source(&self) -> watch::Receiver<DataSource> {
+        self.source.subscribe()
+    }
+
+    /// Record a new data source. The poller notices at once (it waits on this
+    /// channel) and moves the statuses and streams over.
+    pub fn set_source(&self, source: DataSource) {
+        self.source.send_if_modified(|cur| {
+            if *cur == source {
+                false
+            } else {
+                info!("Data source: {}", source.label());
+                *cur = source;
+                true
+            }
+        });
     }
 
     /// Cheap read for hot paths (streamers check it per message).
@@ -220,13 +302,25 @@ pub fn clock_status(now: DateTime<Utc>) -> SourceStatus {
     }
 }
 
-/// An "Open" before 09:15 IST is the pre-open session, not options trading.
-pub fn guard_open(state: MarketState, ist_minutes: u32) -> MarketState {
-    if state == MarketState::Open && ist_minutes < OPTIONS_OPEN_MINUTES {
-        MarketState::PreOpen
-    } else {
-        state
+/// Fit a reported state to the exchange's hours (IST minutes since midnight):
+/// before 09:00 nothing is open yet, so "Open" and "Pre-open" are `Closed`
+/// (a source may report the day as open well before the session starts);
+/// from 09:00 to 09:15 "Open" is the pre-open session, not options trading.
+pub fn guard_hours(state: MarketState, ist_minutes: u32) -> MarketState {
+    match state {
+        MarketState::Open | MarketState::PreOpen if ist_minutes < PRE_OPEN_MINUTES => MarketState::Closed,
+        MarketState::Open if ist_minutes < OPTIONS_OPEN_MINUTES => MarketState::PreOpen,
+        other => other,
     }
+}
+
+/// True from the options open (09:15) to the session end (15:30) on a weekday
+/// (the clock only; holidays are the status API's job).
+pub fn is_session_hours(now: DateTime<Utc>) -> bool {
+    if matches!(ist(now).weekday(), Weekday::Sat | Weekday::Sun) {
+        return false;
+    }
+    (OPTIONS_OPEN_MINUTES..SESSION_END_MINUTES).contains(&ist_minutes(now))
 }
 
 /// Seconds until the next status check. `failures` = consecutive failed checks.
@@ -240,9 +334,42 @@ pub fn check_interval_secs(ist_minutes: u32, state: MarketState, failures: u32) 
         // Tighter near the close, so the streams stop soon after 15:30.
         MarketState::Open if ist_minutes >= 15 * 60 + 28 => 30,
         MarketState::Open => 300,
-        // Early morning: the open is minutes away. Later: a holiday or after the close.
+        // Pre-open is about to start (08:55) until the open has been seen (09:20).
+        MarketState::Closed if (8 * 60 + 55..9 * 60 + 20).contains(&ist_minutes) => 30,
+        // Early morning: the open is some minutes away. Later: a holiday or after the close.
         MarketState::Closed if ist_minutes < 9 * 60 + 20 => 60,
         MarketState::Closed => 300,
+    }
+}
+
+/// What the header's feed indicator says: `(live, label)`.
+///
+/// `Live` means prices are ticking from the selected source in an open
+/// session. `connected` = the source's stream is up; `ticking` = it delivered
+/// a real tick recently; `errored` = it reports an error; `session_hours` =
+/// the clock says the session is on (09:15-15:30 on a weekday), which is only
+/// used when the status API gave no answer (`Unknown`).
+pub fn feed_label(
+    exchange: MarketState,
+    connected: bool,
+    ticking: bool,
+    errored: bool,
+    session_hours: bool,
+) -> (bool, &'static str) {
+    match exchange {
+        MarketState::Closed => return (false, "Closed"),
+        MarketState::PreOpen => return (false, "Pre-open"),
+        MarketState::Unknown if !session_hours => return (false, "Checking"),
+        _ => {}
+    }
+    if ticking {
+        (true, "Live")
+    } else if connected {
+        (false, "No ticks")
+    } else if errored {
+        (false, "Error")
+    } else {
+        (false, "Connecting")
     }
 }
 
@@ -508,7 +635,7 @@ where
     }
     match fetch().await {
         Ok(parsed) => {
-            let state = guard_open(parsed.state, minutes);
+            let state = guard_hours(parsed.state, minutes);
             p.failures = 0;
             if state == MarketState::Open {
                 p.opened_on = Some(date);
@@ -517,7 +644,12 @@ where
                 p.done_on = Some(date);
             }
             p.due = ts + check_interval_secs(minutes, state, 0) as i64;
-            Some(SourceStatus::reported(state, parsed.message, now))
+            let mut message = parsed.message;
+            if state != parsed.state {
+                // Keep what the source said visible in the tooltip, and why it is shown differently.
+                message.push_str(&format!(" · shown as {state:?} (outside session hours)"));
+            }
+            Some(SourceStatus::reported(state, message, now))
         }
         Err(e) => {
             p.failures += 1;
@@ -538,49 +670,75 @@ fn differs(a: &SourceStatus, b: &SourceStatus) -> bool {
     a.state != b.state || a.reason != b.reason
 }
 
+/// The next status for one source, given whether it is the selected data
+/// source. A source that is not selected makes no call and reads `NotUsed`.
+/// A source that has just been selected starts with a fresh `Poll`, so it is
+/// checked at once instead of waiting out an old schedule.
+async fn next_status<F, Fut>(
+    p: &mut Poll,
+    used: bool,
+    other: DataSource,
+    now: DateTime<Utc>,
+    cur: &SourceStatus,
+    fetch: F,
+) -> Option<SourceStatus>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Parsed>>,
+{
+    if !used {
+        return (cur.reason != Reason::NotUsed).then(|| SourceStatus::not_used(other));
+    }
+    if cur.reason == Reason::NotUsed {
+        *p = Poll::default();
+    }
+    if market_clock::is_within_trading_window(now) {
+        poll_source(p, now, cur, fetch).await
+    } else {
+        // Outside the window the clock answers; no network call.
+        let s = clock_status(now);
+        differs(cur, &s).then_some(s)
+    }
+}
+
 /// Start the background poller (call once, from `setup`).
 pub fn spawn(state: SharedState) {
     tauri::async_runtime::spawn(async move {
         let inactive = state.config.market_runtime.inactive_switch_after_secs;
         let mut nse = Poll::default();
         let mut fyers = Poll::default();
+        let mut source_changes = state.market_status.subscribe_source();
         loop {
             let now = market_clock::get_ist_now();
-            let in_window = market_clock::is_within_trading_window(now);
+            let source = state.market_status.source();
 
-            // NSE. Outside the window the clock answers; no network call.
+            // NSE: only when it is the selected data source.
             let cur = state.market_status.nse();
-            let next = if in_window {
-                poll_source(&mut nse, now, &cur, || fetch_nse(&state.config)).await
-            } else {
-                let s = clock_status(now);
-                differs(&cur, &s).then_some(s)
-            };
+            let next = next_status(&mut nse, source == DataSource::Nse, DataSource::Nse, now, &cur, || {
+                fetch_nse(&state.config)
+            })
+            .await;
             if let Some(s) = next {
                 // Updates the streamers' mode first, then wakes anything waiting.
                 state.session.update_nse(s, inactive).await;
             }
 
             // Fyers: only when it is the selected data source.
-            let used = db::get_setting(&state.db, "data.source").await.ok().flatten().as_deref() == Some("fyers");
             let cur = state.market_status.fyers();
-            let next = if !used {
-                (cur.reason != Reason::NotUsed).then(SourceStatus::not_used)
-            } else if !in_window {
-                let s = clock_status(now);
-                differs(&cur, &s).then_some(s)
-            } else {
-                poll_source(&mut fyers, now, &cur, || async {
-                    let creds = crate::commands::active_fyers_creds(&state).await?;
-                    fetch_fyers(&state.config.fyers, &creds).await
-                })
-                .await
-            };
+            let next = next_status(&mut fyers, source == DataSource::Fyers, DataSource::Fyers, now, &cur, || async {
+                let creds = crate::commands::active_fyers_creds(&state).await?;
+                fetch_fyers(&state.config.fyers, &creds).await
+            })
+            .await;
             if let Some(s) = next {
                 state.market_status.publish_fyers(s);
             }
 
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            // A change of data source does not wait for the next round.
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                _ = source_changes.changed() => {}
+            }
         }
     });
 }
@@ -666,10 +824,68 @@ mod tests {
 
     #[test]
     fn open_before_0915_is_pre_open() {
-        assert_eq!(guard_open(MarketState::Open, 9 * 60 + 5), MarketState::PreOpen);
-        assert_eq!(guard_open(MarketState::Open, 9 * 60 + 15), MarketState::Open);
-        assert_eq!(guard_open(MarketState::Closed, 9 * 60 + 5), MarketState::Closed);
-        assert_eq!(guard_open(MarketState::PreOpen, 10 * 60), MarketState::PreOpen);
+        assert_eq!(guard_hours(MarketState::Open, 9 * 60 + 5), MarketState::PreOpen);
+        assert_eq!(guard_hours(MarketState::Open, 9 * 60), MarketState::PreOpen);
+        assert_eq!(guard_hours(MarketState::Open, 9 * 60 + 15), MarketState::Open);
+        assert_eq!(guard_hours(MarketState::Closed, 9 * 60 + 5), MarketState::Closed);
+        assert_eq!(guard_hours(MarketState::PreOpen, 10 * 60), MarketState::PreOpen);
+    }
+
+    #[test]
+    fn nothing_is_open_or_pre_open_before_0900() {
+        // The reported "Open" / "Pre-open" before 09:00 is not a session yet.
+        for m in [8 * 60 + 30, 8 * 60 + 45, 8 * 60 + 59] {
+            assert_eq!(guard_hours(MarketState::Open, m), MarketState::Closed, "open at {m}");
+            assert_eq!(guard_hours(MarketState::PreOpen, m), MarketState::Closed, "pre-open at {m}");
+            assert_eq!(guard_hours(MarketState::Closed, m), MarketState::Closed);
+            assert_eq!(guard_hours(MarketState::Unknown, m), MarketState::Unknown);
+        }
+    }
+
+    #[test]
+    fn session_hours_by_clock() {
+        assert!(!is_session_hours(at(10, 9, 14))); // Tue
+        assert!(is_session_hours(at(10, 9, 15)));
+        assert!(is_session_hours(at(10, 15, 29)));
+        assert!(!is_session_hours(at(10, 15, 30)));
+        assert!(!is_session_hours(at(14, 11, 0))); // Sat
+    }
+
+    #[test]
+    fn feed_indicator_follows_session_and_ticks() {
+        // (exchange, connected, ticking, errored, session_hours)
+        let f = feed_label;
+        assert_eq!(f(MarketState::Open, true, true, false, true), (true, "Live"));
+        assert_eq!(f(MarketState::Open, true, false, false, true), (false, "No ticks"));
+        assert_eq!(f(MarketState::Open, false, false, true, true), (false, "Error"));
+        assert_eq!(f(MarketState::Open, false, false, false, true), (false, "Connecting"));
+        // Pre-open and closed are never Live, even with a connected, ticking stream.
+        assert_eq!(f(MarketState::PreOpen, true, true, false, false), (false, "Pre-open"));
+        assert_eq!(f(MarketState::Closed, true, true, false, false), (false, "Closed"));
+        // No answer from the status API: the clock decides whether ticks count as Live.
+        assert_eq!(f(MarketState::Unknown, true, true, false, true), (true, "Live"));
+        assert_eq!(f(MarketState::Unknown, true, true, false, false), (false, "Checking"));
+    }
+
+    #[test]
+    fn data_source_from_setting() {
+        assert_eq!(DataSource::from_setting(None), DataSource::Nse);
+        assert_eq!(DataSource::from_setting(Some("nse")), DataSource::Nse);
+        assert_eq!(DataSource::from_setting(Some("")), DataSource::Nse);
+        assert_eq!(DataSource::from_setting(Some("fyers")), DataSource::Fyers);
+        assert_eq!(DataSource::from_setting(Some(" Fyers ")), DataSource::Fyers);
+    }
+
+    #[test]
+    fn only_the_selected_source_is_active() {
+        let svc = MarketStatusService::new(DataSource::Fyers);
+        assert_eq!(svc.source(), DataSource::Fyers);
+        assert_eq!(svc.nse().reason, Reason::NotUsed);
+        assert_ne!(svc.fyers().reason, Reason::NotUsed);
+        assert_eq!(svc.active().reason, svc.fyers().reason);
+        svc.set_source(DataSource::Nse);
+        assert_eq!(svc.source(), DataSource::Nse);
+        assert_eq!(svc.active().reason, svc.nse().reason);
     }
 
     #[test]
@@ -677,6 +893,9 @@ mod tests {
         let m = |h: u32, mm: u32| h * 60 + mm;
         assert_eq!(check_interval_secs(m(9, 0), MarketState::PreOpen, 0), 30);
         assert_eq!(check_interval_secs(m(8, 45), MarketState::Closed, 0), 60);
+        // Around the start of pre-open the answer is checked every 30 s.
+        assert_eq!(check_interval_secs(m(8, 58), MarketState::Closed, 0), 30);
+        assert_eq!(check_interval_secs(m(9, 10), MarketState::Closed, 0), 30);
         assert_eq!(check_interval_secs(m(11, 0), MarketState::Closed, 0), 300);
         assert_eq!(check_interval_secs(m(11, 0), MarketState::Open, 0), 300);
         assert_eq!(check_interval_secs(m(15, 29), MarketState::Open, 0), 30);
@@ -706,6 +925,8 @@ mod tests {
         assert!(!st(MarketState::PreOpen).allows_polling(true));
         assert!(st(MarketState::Unknown).allows_polling(true));
         assert!(!st(MarketState::Unknown).allows_polling(false));
+        // Not the selected source: never, even inside the window.
+        assert!(!SourceStatus::not_used(DataSource::Fyers).allows_polling(true));
     }
 
     #[tokio::test]
@@ -757,6 +978,55 @@ mod tests {
         assert!(poll_source(&mut p, at(10, 10, 0), &cur, ok).await.is_some());
         assert!(poll_source(&mut p, at(10, 10, 2), &cur, ok).await.is_none());
         assert!(poll_source(&mut p, at(10, 10, 6), &cur, ok).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unselected_source_is_never_polled() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let called = AtomicBool::new(false);
+        let mut p = Poll::default();
+        let now = at(10, 10, 0);
+        let fetch = || async {
+            called.store(true, Ordering::SeqCst);
+            Ok(Parsed { state: MarketState::Open, message: "x".into() })
+        };
+        let r = next_status(&mut p, false, DataSource::Fyers, now, &SourceStatus::starting(), fetch).await;
+        assert_eq!(r.unwrap().reason, Reason::NotUsed);
+        // Already NotUsed: nothing to publish, and still no call.
+        let cur = SourceStatus::not_used(DataSource::Fyers);
+        assert!(next_status(&mut p, false, DataSource::Fyers, now, &cur, fetch).await.is_none());
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_newly_selected_source_is_checked_at_once() {
+        // An old schedule (next check far away) must not delay a source that was just selected.
+        let mut p = Poll { due: i64::MAX, ..Poll::default() };
+        let cur = SourceStatus::not_used(DataSource::Nse);
+        let ok = || async { Ok(Parsed { state: MarketState::Closed, message: "x".into() }) };
+        let r = next_status(&mut p, true, DataSource::Nse, at(10, 10, 0), &cur, ok).await.unwrap();
+        assert_eq!((r.state, r.reason), (MarketState::Closed, Reason::Reported));
+    }
+
+    #[tokio::test]
+    async fn a_selected_source_outside_the_window_answers_from_the_clock() {
+        let mut p = Poll::default();
+        let cur = SourceStatus::not_used(DataSource::Nse);
+        let never = || async { Err(anyhow!("no call outside the window")) };
+        let r = next_status(&mut p, true, DataSource::Nse, at(10, 8, 0), &cur, never).await.unwrap();
+        assert_eq!((r.state, r.reason), (MarketState::Closed, Reason::OutsideHours));
+    }
+
+    #[tokio::test]
+    async fn open_reported_before_0900_is_shown_closed_with_the_reason() {
+        let mut p = Poll::default();
+        let ok = || async { Ok(Parsed { state: MarketState::Open, message: "NSE Capital Market: Open".into() }) };
+        let s = poll_source(&mut p, at(10, 8, 40), &SourceStatus::starting(), ok).await.unwrap();
+        assert_eq!(s.state, MarketState::Closed);
+        assert!(s.message.contains("Capital Market: Open"), "{}", s.message);
+        assert!(s.message.contains("shown as Closed"), "{}", s.message);
+        // It did not count as the day's open, so a later close does not end the day's checks.
+        assert_eq!(p.opened_on, None);
     }
 
     #[test]

@@ -60,7 +60,14 @@
   $effect(() => {
     if (isPopout) api.setWindowTitle(`KISSA - ${pageLabel}`).catch(() => {});
   });
-  const live = $derived(market.status?.streams.some((s) => s.state === 'connected'));
+  /** Feed indicator dot: green when live, amber when the session is open but nothing is ticking. */
+  const feedDot = $derived(
+    market.status?.live
+      ? 'bg-success'
+      : ['No ticks', 'Connecting', 'Error'].includes(market.status?.feed ?? '')
+        ? 'bg-warning'
+        : 'bg-base-content/30'
+  );
 </script>
 
 <div class="flex h-screen bg-base-200 text-base-content">
@@ -120,25 +127,17 @@
         <KillSwitch />
         {#if market.status}
           <span class="num text-base-content/70">IST {market.clock}</span>
-          {@const nse = market.status.nse}
+          <!-- One source only: the selected data source (Accounts or Option Chain page). -->
+          {@const ex = market.status.exchange}
           <span
-            class="badge badge-sm {stateBadge(nse)}"
-            title="{nse.message}{nse.checkedAt ? ` (checked ${nse.checkedAt} IST)` : ''}"
+            class="badge badge-sm {stateBadge(ex)}"
+            title="{ex.message}{ex.checkedAt ? ` (checked ${ex.checkedAt} IST)` : ''}"
           >
-            NSE {stateLabel(nse)}
+            {market.status.source === 'fyers' ? 'Fyers' : 'NSE'} {stateLabel(ex)}
           </span>
-          {#if market.status.fyers.reason !== 'notUsed'}
-            {@const fy = market.status.fyers}
-            <span
-              class="badge badge-sm {stateBadge(fy)}"
-              title="{fy.message}{fy.checkedAt ? ` (checked ${fy.checkedAt} IST)` : ''}"
-            >
-              Fyers {stateLabel(fy)}
-            </span>
-          {/if}
-          <span class="flex items-center gap-1.5" title="NSE stream state: {market.status.mode}">
-            <span class="size-2 rounded-full {live ? 'bg-success' : 'bg-base-content/30'}"></span>
-            {live ? 'Live' : market.status.mode === 'IDLE' ? 'Idle' : 'Connecting'}
+          <span class="flex items-center gap-1.5" title={market.status.feedDetail}>
+            <span class="size-2 rounded-full {feedDot}"></span>
+            {market.status.feed}
           </span>
         {/if}
       </div>
