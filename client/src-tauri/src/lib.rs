@@ -220,6 +220,7 @@ pub fn run() {
             commands::fyers_login,
             commands::fyers_login_local,
             commands::fyers_login_cancel,
+            commands::fyers_login_finished,
             commands::get_chart,
             commands::list_chart_instruments,
             commands::list_rulesets,

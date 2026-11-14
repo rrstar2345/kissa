@@ -101,7 +101,15 @@ export interface MarketStatus {
   feed: string;
   /** Tooltip for the feed indicator: which stream, and its error if any. */
   feedDetail: string;
+  /** Login state of the Fyers data account; null unless Fyers is the data source. */
+  fyersAuth: FyersAuth | null;
   streams: StreamStat[];
+}
+
+export interface FyersAuth {
+  /** ok: token valid; expired: past its expiry; missing: never logged in; noAccount: none selected. */
+  state: 'ok' | 'expired' | 'missing' | 'noAccount';
+  accountId: string | null;
 }
 
 export interface Account {

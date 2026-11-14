@@ -125,6 +125,65 @@ pub async fn fetch(
     parsed.data.ok_or_else(|| anyhow!("Fyers response had no data"))
 }
 
+/// Last-session figures of one index from the quotes endpoint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quote {
+    pub symbol: String,
+    pub ltp: f64,
+    pub prev_close: f64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+}
+
+/// Reads a `/data/quotes` response. Symbols that errored or have no price are left out.
+pub fn parse_quotes(body: &str) -> Result<Vec<Quote>> {
+    let v: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| anyhow!("Fyers returned an unexpected response: {}", body.chars().take(200).collect::<String>()))?;
+    if v.get("s").and_then(|s| s.as_str()) != Some("ok") {
+        let m = v.get("message").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).unwrap_or("error");
+        return Err(anyhow!("Fyers error: {m}"));
+    }
+    let num = |o: &serde_json::Value, k: &str| o.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let mut out = Vec::new();
+    for item in v.get("d").and_then(|d| d.as_array()).into_iter().flatten() {
+        if item.get("s").and_then(|s| s.as_str()).is_some_and(|s| s != "ok") {
+            continue;
+        }
+        let (Some(symbol), Some(q)) = (item.get("n").and_then(|n| n.as_str()), item.get("v")) else {
+            continue;
+        };
+        let ltp = num(q, "lp");
+        if ltp <= 0.0 {
+            continue;
+        }
+        out.push(Quote {
+            symbol: symbol.to_string(),
+            ltp,
+            prev_close: num(q, "prev_close_price"),
+            open: num(q, "open_price"),
+            high: num(q, "high_price"),
+            low: num(q, "low_price"),
+        });
+    }
+    Ok(out)
+}
+
+/// Quotes for Fyers symbols (at most 50 per call).
+pub async fn fetch_quotes(cfg: &FyersConfig, creds: &FyersCreds, symbols: &[&str]) -> Result<Vec<Quote>> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
+    let resp = client
+        .get(&cfg.quotes_url)
+        .header("Authorization", format!("{}:{}", creds.app_id, creds.access_token))
+        .query(&[("symbols", symbols.join(","))])
+        .send()
+        .await
+        .map_err(|e| anyhow!("Fyers request failed: {e}"))?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    parse_quotes(&body).map_err(|e| anyhow!("{e} (HTTP {status})"))
+}
+
 pub fn expiries(data: &Data) -> Vec<ExpiryItem> {
     data.expiry_data
         .iter()
@@ -345,5 +404,30 @@ pub async fn stream_plan(cfg: &FyersConfig, creds: &FyersCreds, data: &Data) -> 
         options,
         underlying: under_topic.zip(under),
         vix_topic: topics::index_topic(topics::VIX_SYMBOL),
+    }
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::*;
+
+    #[test]
+    fn parses_quotes_and_skips_bad_items() {
+        let body = r#"{"s":"ok","code":200,"d":[
+            {"n":"NSE:NIFTY50-INDEX","s":"ok","v":{"lp":24500.5,"prev_close_price":24400.0,"open_price":24410.0,"high_price":24550.0,"low_price":24390.0}},
+            {"n":"NSE:BAD-INDEX","s":"error","v":{"errmsg":"Invalid symbol"}},
+            {"n":"NSE:INDIAVIX-INDEX","s":"ok","v":{"lp":0}}
+        ]}"#;
+        let q = parse_quotes(body).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].symbol, "NSE:NIFTY50-INDEX");
+        assert_eq!(q[0].prev_close, 24400.0);
+        assert_eq!(q[0].high, 24550.0);
+    }
+
+    #[test]
+    fn quotes_error_and_garbage() {
+        assert!(parse_quotes(r#"{"s":"error","message":"token expired"}"#).unwrap_err().to_string().contains("token expired"));
+        assert!(parse_quotes("<html>").is_err());
     }
 }

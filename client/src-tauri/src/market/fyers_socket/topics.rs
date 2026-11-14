@@ -70,6 +70,16 @@ pub fn nse_index_name(topic: &str) -> Option<String> {
         .map(|i| i.2.to_string())
 }
 
+/// Fyers symbols of the indices the header shows.
+pub fn header_index_symbols() -> Vec<&'static str> {
+    INDICES.iter().map(|i| i.0).collect()
+}
+
+/// Name the NSE index stream uses for a Fyers index symbol.
+pub fn nse_name_for_symbol(symbol: &str) -> Option<String> {
+    INDICES.iter().find(|i| i.0 == symbol).map(|i| i.2.to_string())
+}
+
 /// Topics of the indices the header shows.
 pub fn header_index_topics() -> Vec<String> {
     INDICES.iter().filter_map(|i| index_topic(i.0)).collect()
@@ -179,6 +189,13 @@ mod tests {
         assert_eq!(index_topic("NSE:NIFTY50-INDEX").as_deref(), Some("if|nse_cm|Nifty 50"));
         assert_eq!(index_topic("NSE:NIFTYIT-INDEX").as_deref(), Some("if|nse_cm|NIFTYIT"));
         assert_eq!(index_topic("MCX:GOLD"), None);
+    }
+
+    #[test]
+    fn header_symbols_map_to_nse_names() {
+        assert_eq!(header_index_symbols().len(), 6);
+        assert_eq!(nse_name_for_symbol("NSE:NIFTYBANK-INDEX").as_deref(), Some("NIFTY BANK"));
+        assert_eq!(nse_name_for_symbol("NSE:NIFTYIT-INDEX"), None);
     }
 
     #[test]

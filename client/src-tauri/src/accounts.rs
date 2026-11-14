@@ -232,6 +232,99 @@ pub async fn token_saved_at(pool: &SqlitePool, id: &str) -> Option<chrono::DateT
     chrono::DateTime::parse_from_rfc3339(&text).ok().map(|d| d.with_timezone(&Utc))
 }
 
+// ---------------------------------------------------------------------------
+// Fyers login state (drives the header "log in again" button)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FyersAuthState {
+    /// A token is saved and has not expired.
+    Ok,
+    /// The saved token's expiry time has passed (Fyers tokens last until about 6:30 AM IST).
+    Expired,
+    /// The account has never logged in.
+    Missing,
+    /// No Fyers account is selected as the data source.
+    NoAccount,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FyersAuth {
+    pub state: FyersAuthState,
+    pub account_id: Option<String>,
+}
+
+#[allow(dead_code)]
+/// `exp` is the token's expiry (epoch seconds); a token without a readable one counts as valid.
+pub fn classify_fyers_token(token: Option<&str>, now: i64) -> FyersAuthState {
+    let Some(token) = token else { return FyersAuthState::Missing };
+    match crate::market::fyers_socket::topics::parse_jwt(token).and_then(|j| j.exp) {
+        Some(exp) if exp <= now => FyersAuthState::Expired,
+        _ => FyersAuthState::Ok,
+    }
+}
+
+/// What the last keychain lookup found. The header status is rebuilt every
+/// second, so the lookup is cached for a few seconds (and dropped on login).
+#[derive(Clone)]
+struct AuthLookup {
+    at: std::time::Instant,
+    account_id: Option<String>,
+    token_present: bool,
+    exp: Option<i64>,
+}
+
+fn auth_cache() -> &'static std::sync::Mutex<Option<AuthLookup>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<Option<AuthLookup>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn invalidate_fyers_auth() {
+    *auth_cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Login state of the Fyers data account.
+pub async fn fyers_auth(pool: &SqlitePool) -> FyersAuth {
+    let cached = auth_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .filter(|c| c.at.elapsed() < Duration::from_secs(10));
+    let lookup = match cached {
+        Some(c) => c,
+        None => {
+            let account_id = crate::db::get_setting(pool, "data.fyers_account")
+                .await
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty());
+            let token = account_id.as_deref().and_then(|id| secrets::get(id, "accessToken").ok().flatten());
+            let c = AuthLookup {
+                at: std::time::Instant::now(),
+                token_present: token.is_some(),
+                exp: token
+                    .as_deref()
+                    .and_then(|t| crate::market::fyers_socket::topics::parse_jwt(t))
+                    .and_then(|j| j.exp),
+                account_id,
+            };
+            *auth_cache().lock().unwrap_or_else(|e| e.into_inner()) = Some(c.clone());
+            c
+        }
+    };
+    let state = if lookup.account_id.is_none() {
+        FyersAuthState::NoAccount
+    } else if !lookup.token_present {
+        FyersAuthState::Missing
+    } else if lookup.exp.is_some_and(|e| e <= Utc::now().timestamp()) {
+        FyersAuthState::Expired
+    } else {
+        FyersAuthState::Ok
+    };
+    FyersAuth { state, account_id: lookup.account_id }
+}
+
 pub async fn fyers_creds(pool: &SqlitePool, id: &str) -> Result<FyersCreds> {
     let acct = get(pool, id).await?;
     if acct.kind != "fyers" {
@@ -367,6 +460,7 @@ async fn fyers_exchange(
     }
 
     secrets::set(id, "accessToken", token.unwrap_or_default())?;
+    invalidate_fyers_auth();
     let now = Utc::now().to_rfc3339();
     mark_token_saved(pool, id, &now).await?;
     // A new token restarts the expiry reminders.
@@ -526,6 +620,19 @@ pub fn fyers_login_cancel(id: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fyers_token_classification() {
+        use super::{classify_fyers_token as c, FyersAuthState as S};
+        // exp = 1_900_000_000
+        let t = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE5MDAwMDAwMDAsImhzbV9rZXkiOiJhYmMxMjNfa2V5Iiwic3ViIjoieD4_In0.sig";
+        assert_eq!(c(Some(t), 1_899_999_999), S::Ok);
+        assert_eq!(c(Some(t), 1_900_000_000), S::Expired);
+        assert_eq!(c(Some(&format!("APP-100:{t}")), 1_950_000_000), S::Expired);
+        assert_eq!(c(None, 0), S::Missing);
+        // Unreadable token: not treated as expired.
+        assert_eq!(c(Some("opaque-token"), 1_950_000_000), S::Ok);
+    }
+
     use super::*;
 
     #[test]

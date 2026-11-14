@@ -131,6 +131,8 @@ pub struct FyersConfig {
     pub socket_url: String,
     /// Symbol to token lookup, used when the chain response has no `fyToken`.
     pub symbol_token_url: String,
+    /// Quotes endpoint, used to fill the header indices while the socket is down.
+    pub quotes_url: String,
     /// Most symbols subscribed at once: 100 on the Standard plan, 5000 on Prime.
     pub max_symbols: usize,
     /// While the socket streams, seconds between chain calls that refresh the
@@ -151,6 +153,7 @@ impl Default for FyersConfig {
             use_socket: true,
             socket_url: "wss://socket.fyers.in/hsm/v1-5/prod".into(),
             symbol_token_url: "https://api-t1.fyers.in/data/symbol-token".into(),
+            quotes_url: "https://api-t1.fyers.in/data/quotes".into(),
             max_symbols: 100,
             chain_refresh_secs: 60,
         }

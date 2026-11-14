@@ -78,6 +78,8 @@ export const api = {
   fyersLoginLocal: (id: string) => invoke<void>('fyers_login_local', { id }),
   fyersLoginCancel: (id: string) => invoke<void>('fyers_login_cancel', { id }),
   fyersLogin: (id: string, pasted: string) => invoke<void>('fyers_login', { id, pasted }),
+  /** After a login: runs the account test, then re-seeds the header indices. */
+  fyersLoginFinished: (id: string) => invoke<TestResult>('fyers_login_finished', { id }),
 
   placeOrder: (input: PlaceOrderInput) => invoke<OrderRow>('place_order', { input }),
   cancelOrder: (id: string) => invoke<OrderRow>('cancel_order', { id }),

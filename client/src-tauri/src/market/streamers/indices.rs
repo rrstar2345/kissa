@@ -267,7 +267,7 @@ async fn stream_active(
 /// disconnect. If any real (non-heartbeat) message arrives, `record_activity`
 /// flips the shared session to Active so the next loop iteration switches
 /// to the held-open connection.
-async fn poll_once(
+pub(crate) async fn poll_once(
     config: &AppConfig,
     stats: &SharedStats,
     session: &SharedSessionState,

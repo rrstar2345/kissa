@@ -56,6 +56,9 @@ pub struct Hub {
     /// Per consumer, topics in priority order.
     wants: Mutex<BTreeMap<u64, Vec<String>>>,
     changed: Notify,
+    /// A new access token was saved: re-seed the header and cut short a back-off.
+    seed_wanted: Notify,
+    relogin: Notify,
     next_owner: AtomicU64,
     status: watch::Sender<SocketStatus>,
     /// Unix ms of the last decoded tick on the current connection (0 = none yet).
@@ -105,10 +108,19 @@ impl Hub {
             tx,
             wants: Mutex::new(BTreeMap::new()),
             changed: Notify::new(),
+            seed_wanted: Notify::new(),
+            relogin: Notify::new(),
             next_owner: AtomicU64::new(1),
             status,
             last_tick_ms: AtomicI64::new(0),
         })
+    }
+
+    /// Call after a successful Fyers login (and its test call): the header
+    /// indices are seeded again and a socket waiting out a token error retries now.
+    pub fn token_renewed(&self) {
+        self.seed_wanted.notify_one();
+        self.relogin.notify_one();
     }
 
     /// The socket is connected and subscribed.
@@ -246,7 +258,10 @@ impl Hub {
     async fn fail(&self, message: String, wait_secs: u64) {
         let (_, wanted) = self.desired();
         self.set_status(false, Some(message), 0, wanted);
-        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => {}
+            _ = self.relogin.notified() => {}
+        }
     }
 
     /// One connection. `Ok` = ended on purpose (not needed any more), `Err` = reconnect.

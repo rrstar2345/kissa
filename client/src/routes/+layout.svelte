@@ -11,6 +11,8 @@
   import { num, signed, trend } from '$lib/format';
   import KillSwitch from '$lib/components/KillSwitch.svelte';
   import TopBarPnl from '$lib/components/TopBarPnl.svelte';
+  import FyersLogin from '$lib/components/FyersLogin.svelte';
+  import type { Account } from '$lib/types';
 
   let { children } = $props();
 
@@ -40,6 +42,32 @@
   }
 
   const watch = ['NIFTY 50', 'NIFTY BANK', 'INDIA VIX'];
+
+  // Fyers login from the header, when the saved token has expired (or there is none).
+  let loggingIn = $state<Account | null>(null);
+  const fyersAuth = $derived(market.status?.fyersAuth ?? null);
+  async function startFyersLogin() {
+    popError.msg = '';
+    try {
+      const id = fyersAuth?.accountId;
+      const acct = (await api.listAccounts()).find((a) => a.id === id);
+      if (!acct) throw new Error('The Fyers data account was not found. Check Accounts.');
+      if (!acct.secretsSet.includes('appSecret')) {
+        throw new Error('Edit the Fyers account under Accounts and enter the Secret ID first.');
+      }
+      loggingIn = acct;
+    } catch (e) {
+      popError.msg = String(e);
+    }
+  }
+  async function fyersLoggedIn() {
+    const id = loggingIn?.id;
+    loggingIn = null;
+    if (!id) return;
+    // Test call first; the header indices are seeded again once it passes.
+    const r = await api.fyersLoginFinished(id).catch((e) => ({ ok: false, message: String(e) }));
+    if (!r.ok) popError.msg = `Fyers login saved, but the test call failed: ${r.message}`;
+  }
 
   onMount(() => {
     theme.init();
@@ -125,6 +153,22 @@
 
       <div class="ml-auto flex items-center gap-3 text-xs">
         <KillSwitch />
+        {#if fyersAuth && fyersAuth.state !== 'ok'}
+          {#if fyersAuth.state === 'noAccount'}
+            <a href="/accounts" class="badge badge-sm badge-warning" title="Fyers is the data source but no Fyers account is selected">
+              Fyers: select account
+            </a>
+          {:else}
+            <button
+              type="button"
+              class="badge badge-sm badge-error cursor-pointer"
+              title="Click to log in to Fyers. Index prices come from NSE until you do."
+              onclick={startFyersLogin}
+            >
+              {fyersAuth.state === 'expired' ? 'Fyers login expired' : 'Fyers not logged in'} · Log in
+            </button>
+          {/if}
+        {/if}
         {#if market.status}
           <span class="num text-base-content/70">IST {market.clock}</span>
           <!-- One source only: the selected data source (Accounts or Option Chain page). -->
@@ -151,3 +195,14 @@
     </main>
   </div>
 </div>
+
+{#if loggingIn}
+  <dialog class="modal modal-open">
+    <div class="modal-box">
+      {#key loggingIn.id}
+        <FyersLogin account={loggingIn} ondone={fyersLoggedIn} oncancel={() => (loggingIn = null)} />
+      {/key}
+    </div>
+    <button class="modal-backdrop" aria-label="Close" onclick={() => (loggingIn = null)}></button>
+  </dialog>
+{/if}

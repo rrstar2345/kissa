@@ -50,6 +50,8 @@ pub struct MarketStatus {
     pub feed: String,
     /// Tooltip for the feed indicator: which stream, and its error if any.
     pub feed_detail: String,
+    /// Login state of the Fyers data account; only set while Fyers is the data source.
+    pub fyers_auth: Option<accounts::FyersAuth>,
     pub streams: Vec<StreamStat>,
 }
 
@@ -74,6 +76,7 @@ impl MarketStatus {
             "l": self.live,
             "fd": &self.feed,
             "fx": &self.feed_detail,
+            "fa": &self.fyers_auth,
             "s": streams,
         })
         .to_string()
@@ -141,6 +144,7 @@ pub async fn build_market_status(state: &AppState) -> MarketStatus {
         live,
         feed: feed.to_string(),
         feed_detail: detail,
+        fyers_auth: if source == DataSource::Fyers { Some(accounts::fyers_auth(&state.db).await) } else { None },
         streams,
     }
 }
@@ -327,6 +331,20 @@ pub async fn fyers_login_local(id: String, app: tauri::AppHandle, state: State<'
 #[tauri::command]
 pub fn fyers_login_cancel(id: String) {
     accounts::fyers_login_cancel(&id);
+}
+
+/// After a Fyers login: runs the account's test call and, if it passes, seeds
+/// the header indices again (and lets the data socket retry at once).
+#[tauri::command]
+pub async fn fyers_login_finished(id: String, state: State<'_, SharedState>) -> Res<TestResult> {
+    let result = match accounts::test(&state.db, &state.config, &id).await {
+        Ok(r) => r,
+        Err(e) => TestResult { ok: false, message: e.to_string() },
+    };
+    if result.ok {
+        state.fyers_hub.token_renewed();
+    }
+    Ok(result)
 }
 
 /// Fyers login step 2: exchange the pasted redirect URL / auth code for an access token.
