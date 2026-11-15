@@ -183,7 +183,7 @@ impl Hub {
         }
         let total = idx.len() + rest.len();
         idx.extend(rest);
-        idx.truncate(self.cfg.max_symbols.max(1));
+        idx.truncate(self.cfg.max_symbols_eff().max(1));
         (idx, total)
     }
 

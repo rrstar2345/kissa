@@ -44,6 +44,13 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
             let (ltp, ltp_rx) = trading::ltp::LtpStore::new();
             let alerts = tauri::async_runtime::block_on(alerts::AlertService::new(pool.clone(), app.handle().clone()));
+            // Every Fyers REST call goes through this limiter (see market/fyers_api).
+            let fyers_api = tauri::async_runtime::block_on(market::fyers_api::FyersApi::new(
+                &config.fyers,
+                pool.clone(),
+                alerts.clone(),
+            ));
+            market::fyers_api::install(fyers_api.clone());
             let (trading_svc, broker_rx) = trading::service::TradingService::new(
                 pool.clone(),
                 config.clone(),
@@ -71,6 +78,7 @@ pub fn run() {
                 trading: trading_svc.clone(),
                 alerts,
                 fyers_hub: market::fyers_socket::Hub::new(config.fyers.clone()),
+                fyers_api,
             });
             app.manage(state.clone());
             // Pop-out windows left open last time.
@@ -205,6 +213,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::market_status,
+            commands::fyers_usage,
             commands::indices_snapshot,
             commands::list_fno_symbols,
             commands::list_expiries,

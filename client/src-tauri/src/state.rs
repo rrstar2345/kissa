@@ -7,6 +7,7 @@ use crate::alerts::AlertService;
 use crate::chain::runner::ChainHandle;
 use crate::charts::recorder::Recorder;
 use crate::market::events::IndexStore;
+use crate::market::fyers_api::FyersApi;
 use crate::market::fyers_socket::Hub;
 use crate::market::market_clock::SharedSessionState;
 use crate::market::status::SharedMarketStatus;
@@ -35,6 +36,8 @@ pub struct AppState {
     pub alerts: Arc<AlertService>,
     /// Shared Fyers data socket (runs only while Fyers is the data source).
     pub fyers_hub: Arc<Hub>,
+    /// Rate limiter for every Fyers REST call, and the data-API health report.
+    pub fyers_api: Arc<FyersApi>,
 }
 
 pub type SharedState = Arc<AppState>;

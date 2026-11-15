@@ -133,11 +133,106 @@ pub struct FyersConfig {
     pub symbol_token_url: String,
     /// Quotes endpoint, used to fill the header indices while the socket is down.
     pub quotes_url: String,
-    /// Most symbols subscribed at once: 100 on the Standard plan, 5000 on Prime.
+    /// Most symbols subscribed at once. Leave at 100 to follow `plan`
+    /// (100 Standard, 5000 Prime); any other value is used as given.
     pub max_symbols: usize,
     /// While the socket streams, seconds between chain calls that refresh the
     /// strike list and open interest.
     pub chain_refresh_secs: u64,
+    /// Your Fyers plan, `standard` (free) or `prime`. Picks the rate limits, the
+    /// quotes batch size, the history range and the socket symbol cap.
+    pub plan: String,
+    /// Custom limits. Leave `null` to use the preset of `plan`.
+    pub limits: Option<FyersLimits>,
+}
+
+/// Calls allowed per second / minute / day for one group of Fyers APIs.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct CategoryLimits {
+    pub per_sec: u32,
+    pub per_min: u32,
+    pub per_day: u32,
+}
+
+impl Default for CategoryLimits {
+    fn default() -> Self {
+        Self { per_sec: 5, per_min: 50, per_day: 5_000 }
+    }
+}
+
+/// Fyers plan limits (docs page "Plans & Limits"; re-check before relying on
+/// them). `data` = market data APIs (chain, quotes, history, symbol-token,
+/// market status); `account` = Transaction + User Info APIs.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct FyersLimits {
+    pub data: CategoryLimits,
+    pub account: CategoryLimits,
+    /// Share of each limit the app is allowed to use (0.8 = 80 %), so a burst
+    /// or a second app never trips the real limit.
+    pub headroom: f64,
+    /// Symbols per quotes request.
+    pub quotes_per_request: usize,
+    /// Oldest daily / intraday history the plan serves, in days. 0 = no clamp.
+    pub history_daily_days: u32,
+    pub history_intraday_days: u32,
+    /// Data socket symbol cap of the plan.
+    pub max_symbols: usize,
+}
+
+impl FyersLimits {
+    pub fn standard() -> Self {
+        Self {
+            data: CategoryLimits { per_sec: 5, per_min: 50, per_day: 5_000 },
+            account: CategoryLimits { per_sec: 10, per_min: 200, per_day: 100_000 },
+            headroom: 0.8,
+            quotes_per_request: 50,
+            history_daily_days: 5 * 365,
+            history_intraday_days: 365,
+            max_symbols: 100,
+        }
+    }
+
+    pub fn prime() -> Self {
+        Self {
+            data: CategoryLimits { per_sec: 10, per_min: 500, per_day: 500_000 },
+            account: CategoryLimits { per_sec: 10, per_min: 500, per_day: 500_000 },
+            headroom: 0.8,
+            quotes_per_request: 1_000,
+            history_daily_days: 0,
+            history_intraday_days: 0,
+            max_symbols: 5_000,
+        }
+    }
+}
+
+impl Default for FyersLimits {
+    fn default() -> Self {
+        Self::standard()
+    }
+}
+
+impl FyersConfig {
+    /// The limits in force: the custom ones, else the preset of `plan`.
+    pub fn limits(&self) -> FyersLimits {
+        self.limits.clone().unwrap_or_else(|| {
+            if self.plan.trim().eq_ignore_ascii_case("prime") {
+                FyersLimits::prime()
+            } else {
+                FyersLimits::standard()
+            }
+        })
+    }
+
+    /// Socket symbol cap: `max_symbols` when changed from its default, else the plan's.
+    pub fn max_symbols_eff(&self) -> usize {
+        if self.max_symbols != 100 {
+            self.max_symbols
+        } else {
+            self.limits().max_symbols
+        }
+    }
 }
 
 impl Default for FyersConfig {
@@ -156,6 +251,8 @@ impl Default for FyersConfig {
             quotes_url: "https://api-t1.fyers.in/data/quotes".into(),
             max_symbols: 100,
             chain_refresh_secs: 60,
+            plan: "standard".into(),
+            limits: None,
         }
     }
 }
@@ -452,6 +549,20 @@ mod tests {
         assert_eq!(t.square_off_minutes(), Some(15 * 60 + 20));
         t.paper_allow_off_hours = true;
         assert_eq!(t.square_off_minutes(), None);
+    }
+
+    #[test]
+    fn plan_presets_and_overrides() {
+        let mut f = FyersConfig::default();
+        assert_eq!(f.limits().data.per_day, 5_000);
+        assert_eq!(f.max_symbols_eff(), 100);
+        f.plan = "Prime".into();
+        assert_eq!(f.limits().data.per_min, 500);
+        assert_eq!(f.max_symbols_eff(), 5_000);
+        f.max_symbols = 250;
+        assert_eq!(f.max_symbols_eff(), 250);
+        f.limits = Some(FyersLimits { headroom: 0.5, ..FyersLimits::standard() });
+        assert_eq!(f.limits().headroom, 0.5);
     }
 
     #[test]

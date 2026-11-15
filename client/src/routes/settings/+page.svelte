@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import type { TestResult } from '$lib/types';
+  import { every } from '$lib/timers';
+  import type { FyersUsage, TestResult } from '$lib/types';
 
   // server connection
   let url = $state('');
@@ -20,6 +21,18 @@
   let loadError = $state('');
 
   const dirty = $derived(json !== original);
+
+  // Fyers call budget (counts since local midnight IST; saved across restarts)
+  let usage = $state<FyersUsage | null>(null);
+  async function loadUsage() {
+    usage = await api.fyersUsage().catch(() => usage);
+  }
+  onMount(() => {
+    loadUsage();
+    const t = every(loadUsage, 10_000);
+    return () => clearInterval(t);
+  });
+  const pct = (used: number, budget: number) => (budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0);
 
   async function load() {
     try {
@@ -120,6 +133,44 @@
       </button>
     </div>
   </section>
+
+  {#if usage}
+    <section class="flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-5">
+      <div>
+        <h2 class="font-semibold">Fyers API usage</h2>
+        <p class="text-sm text-base-content/60">
+          Every Fyers call is counted and throttled to {Math.round(usage.headroom * 100)}% of the {usage.plan} plan limits
+          (<code>fyers.plan</code> and <code>fyers.limits</code> in settings.json). Exceeding the per-minute limit more than
+          3 times in a day blocks the account for the rest of the day.
+        </p>
+      </div>
+      {#each usage.categories as c (c.category)}
+        <div class="flex flex-col gap-1.5">
+          <div class="flex items-baseline justify-between text-sm">
+            <span class="font-medium">{c.label}</span>
+            {#if c.paused}<span class="badge badge-sm badge-warning">{c.paused}</span>{/if}
+          </div>
+          <div class="grid grid-cols-[5rem_1fr_9rem] items-center gap-x-3 gap-y-1 text-xs">
+            <span class="text-base-content/60">Today</span>
+            <progress class="progress {pct(c.usedDay, c.budgetDay) >= 85 ? 'progress-warning' : 'progress-primary'} w-full" value={c.usedDay} max={c.budgetDay}></progress>
+            <span class="num text-right">{c.usedDay.toLocaleString()} / {c.budgetDay.toLocaleString()}</span>
+            <span class="text-base-content/60">Last minute</span>
+            <progress class="progress progress-primary w-full" value={c.usedMin} max={c.budgetMin}></progress>
+            <span class="num text-right">{c.usedMin} / {c.budgetMin}</span>
+            <span class="text-base-content/60">Last second</span>
+            <progress class="progress progress-primary w-full" value={c.usedSec} max={c.budgetSec}></progress>
+            <span class="num text-right">{c.usedSec} / {c.budgetSec}</span>
+          </div>
+          <p class="text-xs text-base-content/50">
+            Plan limit {c.planDay.toLocaleString()} a day.{c.breachesToday > 0 ? ` Rate-limit errors today: ${c.breachesToday}.` : ''}
+          </p>
+        </div>
+      {/each}
+      {#each usage.hints as h}
+        <div role="status" class="alert alert-warning alert-soft py-2 text-sm break-words">{h}</div>
+      {/each}
+    </section>
+  {/if}
 
   <section class="flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-5">
     <div>

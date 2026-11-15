@@ -10,6 +10,7 @@ use std::time::Duration;
 use super::engine::years_to_expiry;
 use super::greeks;
 use super::{pct, ChainSnapshot, ExpiryItem, Leg, StrikeRow};
+use crate::market::fyers_api::{self, Category, Priority};
 use crate::market::fyers_socket::topics;
 use crate::settings::FyersConfig;
 
@@ -88,41 +89,55 @@ pub fn fyers_symbol(symbol: &str) -> String {
     }
 }
 
+/// One request answers every chain asking for the same symbol, strike count
+/// and expiry within this time (several windows, the price feed).
+const CHAIN_SHARE_TTL: Duration = Duration::from_secs(1);
+
 pub async fn fetch(
     cfg: &FyersConfig,
     creds: &FyersCreds,
     symbol: &str,
     strike_count: u32,
     expiry_epoch: Option<&str>,
+    prio: Priority,
 ) -> Result<Data> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
+    let strikes = strike_count.clamp(1, 50);
     let mut query = vec![
         ("symbol", fyers_symbol(symbol)),
-        ("strikecount", strike_count.clamp(1, 50).to_string()),
+        ("strikecount", strikes.to_string()),
         ("greeks", "1".to_string()),
     ];
     if let Some(ts) = expiry_epoch {
         query.push(("timestamp", ts.to_string()));
     }
-    let resp = client
-        .get(&cfg.chain_url)
-        .header("Authorization", format!("{}:{}", creds.app_id, creds.access_token))
-        .query(&query)
-        .send()
-        .await
-        .map_err(|e| anyhow!("Fyers request failed: {}", e))?;
-    let status = resp.status();
-    let body = resp.text().await?;
-    let parsed: Resp = serde_json::from_str(&body).map_err(|_| {
-        anyhow!("Fyers returned an unexpected response (HTTP {}): {}", status, &body[..body.len().min(200)])
-    })?;
-    if parsed.s.as_deref() != Some("ok") {
-        return Err(anyhow!(
-            "Fyers error: {}",
-            parsed.message.filter(|m| !m.is_empty()).unwrap_or_else(|| format!("HTTP {}", status))
-        ));
-    }
+    let key = format!("chain|{}|{symbol}|{strikes}|{}", creds.app_id, expiry_epoch.unwrap_or(""));
+    let url = cfg.chain_url.clone();
+    let body = fyers_api::shared(key, CHAIN_SHARE_TTL, move || async move {
+        let req = fyers_api::get(&url, creds).query(&query);
+        let reply = fyers_api::send("chain", Category::Data, prio, req).await?;
+        // A reply that is not a usable chain must not be shared.
+        match serde_json::from_str::<Resp>(&reply.body) {
+            Ok(r) if r.s.as_deref() == Some("ok") => Ok(reply.body),
+            _ => Err(chain_error(reply.status, &reply.body)),
+        }
+    })
+    .await?;
+    let parsed: Resp = serde_json::from_str(&body).map_err(|_| chain_error(0, &body))?;
     parsed.data.ok_or_else(|| anyhow!("Fyers response had no data"))
+}
+
+/// The error for a chain reply that did not carry a chain.
+fn chain_error(status: u16, body: &str) -> anyhow::Error {
+    match serde_json::from_str::<Resp>(body) {
+        Ok(r) => anyhow!(
+            "Fyers error: {}",
+            r.message.filter(|m| !m.is_empty()).unwrap_or_else(|| format!("HTTP {status}"))
+        ),
+        Err(_) => anyhow!(
+            "Fyers returned an unexpected response (HTTP {status}): {}",
+            body.chars().take(200).collect::<String>()
+        ),
+    }
 }
 
 /// Last-session figures of one index from the quotes endpoint.
@@ -169,19 +184,29 @@ pub fn parse_quotes(body: &str) -> Result<Vec<Quote>> {
     Ok(out)
 }
 
-/// Quotes for Fyers symbols (at most 50 per call).
-pub async fn fetch_quotes(cfg: &FyersConfig, creds: &FyersCreds, symbols: &[&str]) -> Result<Vec<Quote>> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
-    let resp = client
-        .get(&cfg.quotes_url)
-        .header("Authorization", format!("{}:{}", creds.app_id, creds.access_token))
-        .query(&[("symbols", symbols.join(","))])
-        .send()
-        .await
-        .map_err(|e| anyhow!("Fyers request failed: {e}"))?;
-    let status = resp.status();
-    let body = resp.text().await?;
-    parse_quotes(&body).map_err(|e| anyhow!("{e} (HTTP {status})"))
+/// Quotes for Fyers symbols, in batches of the plan's `quotes_per_request`
+/// (50 on Standard). Batches that fail are skipped as long as one succeeded.
+pub async fn fetch_quotes(cfg: &FyersConfig, creds: &FyersCreds, symbols: &[&str], prio: Priority) -> Result<Vec<Quote>> {
+    let batch = cfg.limits().quotes_per_request.max(1);
+    let mut out = Vec::new();
+    let mut first_err: Option<anyhow::Error> = None;
+    for chunk in symbols.chunks(batch) {
+        let req = fyers_api::get(&cfg.quotes_url, creds).query(&[("symbols", chunk.join(","))]);
+        let result = match fyers_api::send("quotes", Category::Data, prio, req).await {
+            Ok(reply) => parse_quotes(&reply.body).map_err(|e| anyhow!("{e} (HTTP {})", reply.status)),
+            Err(e) => Err(anyhow!("{e}")),
+        };
+        match result {
+            Ok(q) => out.extend(q),
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    match (out.is_empty(), first_err) {
+        (true, Some(e)) => Err(e),
+        _ => Ok(out),
+    }
 }
 
 pub fn expiries(data: &Data) -> Vec<ExpiryItem> {

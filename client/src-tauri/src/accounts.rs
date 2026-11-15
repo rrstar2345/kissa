@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::chain::fyers::{self, FyersCreds};
+use crate::market::fyers_api::{self, Category, Priority};
 use crate::secrets;
 use crate::settings::AppConfig;
 
@@ -284,6 +285,31 @@ fn invalidate_fyers_auth() {
     *auth_cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// The API refused the saved Fyers token although it has not expired (revoked,
+/// or the app secret changed). Set by the Fyers send wrapper; makes
+/// `fyers_auth` report `expired` so the header offers the login. Cleared by a
+/// login, by a call that succeeds again, or when the data account changes.
+static FYERS_REJECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_fyers_rejected() {
+    use std::sync::atomic::Ordering;
+    if !FYERS_REJECTED.swap(true, Ordering::SeqCst) {
+        tracing::warn!("Fyers rejected the saved access token; showing the login prompt");
+    }
+    invalidate_fyers_auth();
+}
+
+pub fn clear_fyers_rejected() {
+    use std::sync::atomic::Ordering;
+    if FYERS_REJECTED.swap(false, Ordering::SeqCst) {
+        invalidate_fyers_auth();
+    }
+}
+
+pub fn fyers_rejected() -> bool {
+    FYERS_REJECTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Login state of the Fyers data account.
 pub async fn fyers_auth(pool: &SqlitePool) -> FyersAuth {
     let cached = auth_cache()
@@ -317,7 +343,7 @@ pub async fn fyers_auth(pool: &SqlitePool) -> FyersAuth {
         FyersAuthState::NoAccount
     } else if !lookup.token_present {
         FyersAuthState::Missing
-    } else if lookup.exp.is_some_and(|e| e <= Utc::now().timestamp()) {
+    } else if lookup.exp.is_some_and(|e| e <= Utc::now().timestamp()) || fyers_rejected() {
         FyersAuthState::Expired
     } else {
         FyersAuthState::Ok
@@ -435,18 +461,16 @@ async fn fyers_exchange(
     secret: &str,
     code: &str,
 ) -> Result<()> {
-    let resp = http()?
-        .post(&cfg.fyers.validate_url)
-        .json(&json!({
-            "grant_type": "authorization_code",
-            "appIdHash": app_id_hash(app_id, secret),
-            "code": code,
-        }))
-        .send()
+    let req = fyers_api::post_anonymous(&cfg.fyers.validate_url).json(&json!({
+        "grant_type": "authorization_code",
+        "appIdHash": app_id_hash(app_id, secret),
+        "code": code,
+    }));
+    // A wrong auth code is the user's slip, not a rejected token (`judge_auth = false`).
+    let reply = fyers_api::send_with("validate-authcode", Category::Account, Priority::User, req, false)
         .await
         .map_err(|e| anyhow!("Could not reach Fyers: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().await?;
+    let (status, text) = (reply.status, reply.body);
     let v: Value = serde_json::from_str(&text).map_err(|_| {
         anyhow!("Fyers returned an unexpected response (HTTP {status}): {}", text.chars().take(200).collect::<String>())
     })?;
@@ -461,6 +485,7 @@ async fn fyers_exchange(
 
     secrets::set(id, "accessToken", token.unwrap_or_default())?;
     invalidate_fyers_auth();
+    clear_fyers_rejected();
     let now = Utc::now().to_rfc3339();
     mark_token_saved(pool, id, &now).await?;
     // A new token restarts the expiry reminders.
@@ -743,7 +768,7 @@ pub async fn test(pool: &SqlitePool, cfg: &AppConfig, id: &str) -> Result<TestRe
         }
         "fyers" => {
             let creds = fyers_creds(pool, id).await?;
-            fyers::fetch(&cfg.fyers, &creds, "NIFTY", 1, None).await?;
+            fyers::fetch(&cfg.fyers, &creds, "NIFTY", 1, None, Priority::User).await?;
             ok("Fyers credentials accepted (option chain fetched).".into())
         }
         k => Err(anyhow!("Unknown account type: {k}")),

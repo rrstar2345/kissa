@@ -86,6 +86,7 @@ pub async fn run(
                     Ok(_) => info!("Indices stream closed gracefully"),
                     Err(e) => {
                         warn!("Indices stream error: {}", e);
+                        crate::market::fyers_api::nse_fail("index stream", &e.to_string());
                         let mut s = stats.write().await;
                         let stat = s.ensure_stream(STREAM_NAME);
                         stat.last_error = Some(e.to_string());
@@ -218,6 +219,7 @@ async fn stream_active(
         .map_err(|e| anyhow!("Failed to connect to indices WebSocket: {}", e))?;
 
     info!("Connected to indices WebSocket stream (active mode)");
+    crate::market::fyers_api::nse_ok("index stream");
     {
         let mut s = stats.write().await;
         let stat = s.ensure_stream(STREAM_NAME);

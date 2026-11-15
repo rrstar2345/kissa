@@ -10,6 +10,7 @@ use crate::charts::{backfill, indicators, resample, store, BackfillResult, Chart
 use crate::chain::{fyers, ExpiryItem};
 use crate::db;
 use crate::market::events::IndexTick;
+use crate::market::fyers_api::{ApiIssue, Category, CategoryUsage, ErrorKind, Source};
 use crate::market::status::{self, DataSource, SourceStatus};
 use crate::market::streamers::indices::STREAM_NAME as INDICES_STREAM;
 use crate::market::{market_clock, symbols};
@@ -52,6 +53,9 @@ pub struct MarketStatus {
     pub feed_detail: String,
     /// Login state of the Fyers data account; only set while Fyers is the data source.
     pub fyers_auth: Option<accounts::FyersAuth>,
+    /// A data API of the selected source is failing (rate limited, login rejected,
+    /// repeated errors). The feed indicator shows it until the next success.
+    pub api_health: Option<ApiIssue>,
     pub streams: Vec<StreamStat>,
 }
 
@@ -77,6 +81,7 @@ impl MarketStatus {
             "fd": &self.feed,
             "fx": &self.feed_detail,
             "fa": &self.fyers_auth,
+            "ah": &self.api_health,
             "s": streams,
         })
         .to_string()
@@ -126,7 +131,25 @@ pub async fn build_market_status(state: &AppState) -> MarketStatus {
             (connected, ticking, error.is_some(), detail)
         }
     };
-    let (live, feed) = status::feed_label(exchange.state, connected, ticking, errored, status::is_session_hours(now));
+    let (mut live, mut feed) = {
+        let (l, f) = status::feed_label(exchange.state, connected, ticking, errored, status::is_session_hours(now));
+        (l, f.to_string())
+    };
+    // A failing data API wins over the stream state: the user needs to know why prices may be stale.
+    let api_health = state.fyers_api.health.current(match source {
+        DataSource::Nse => Source::Nse,
+        DataSource::Fyers => Source::Fyers,
+    });
+    let mut detail = detail;
+    if let Some(issue) = &api_health {
+        live = false;
+        feed = match issue.kind {
+            ErrorKind::RateLimited => "Rate limited",
+            _ => "API error",
+        }
+        .to_string();
+        detail = format!("{} (since {} IST) · {detail}", issue.detail(), ist_hms(issue.since_ms));
+    }
     let mode = match source {
         DataSource::Nse => state.session.mode().await.label().to_string(),
         DataSource::Fyers => (if connected { "ACTIVE" } else { "IDLE" }).to_string(),
@@ -142,10 +165,65 @@ pub async fn build_market_status(state: &AppState) -> MarketStatus {
         nse: state.market_status.nse(),
         fyers: state.market_status.fyers(),
         live,
-        feed: feed.to_string(),
+        feed,
         feed_detail: detail,
         fyers_auth: if source == DataSource::Fyers { Some(accounts::fyers_auth(&state.db).await) } else { None },
+        api_health,
         streams,
+    }
+}
+
+/// `HH:MM:SS` in IST of a UTC epoch in milliseconds.
+fn ist_hms(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|t| (t + chrono::Duration::seconds(5 * 3600 + 30 * 60)).format("%H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+/// What the Settings page shows about the Fyers call budget.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FyersUsage {
+    pub plan: String,
+    /// Share of each plan limit the app uses.
+    pub headroom: f64,
+    pub categories: Vec<CategoryUsage>,
+    pub hints: Vec<String>,
+}
+
+#[tauri::command]
+pub fn fyers_usage(state: State<'_, SharedState>) -> FyersUsage {
+    let cfg = &state.config.fyers;
+    let limiter = &state.fyers_api.limiter;
+    let categories = limiter.usage();
+    let mut hints = Vec::new();
+    for c in &categories {
+        if let Some(p) = &c.paused {
+            hints.push(format!("{} are {p} after a rate-limit error.", c.label));
+        }
+    }
+    let poll = std::time::Duration::from_secs(cfg.poll_secs.max(1));
+    if !cfg.use_socket {
+        let calls = 22_500 / cfg.poll_secs.max(1);
+        let budget = categories.iter().find(|c| c.category == Category::Data).map_or(0, |c| c.budget_day);
+        hints.push(format!(
+            "The data socket is off (fyers.use_socket): a REST chain polling every {} s would need about {calls} of your {budget} daily data calls in one session. Turn the socket on to save them.",
+            cfg.poll_secs.max(1)
+        ));
+    }
+    let paced = limiter.paced_interval(Category::Data, poll);
+    if paced > poll + std::time::Duration::from_secs(1) {
+        hints.push(format!(
+            "REST polling is stretched from {} s to {} s so the rest of today's data budget lasts until the close.",
+            poll.as_secs(),
+            paced.as_secs()
+        ));
+    }
+    FyersUsage {
+        plan: if cfg.limits.is_some() { "custom".into() } else { cfg.plan.to_lowercase() },
+        headroom: limiter.limits().headroom,
+        categories,
+        hints,
     }
 }
 
@@ -188,7 +266,9 @@ pub(crate) async fn active_fyers_creds(state: &SharedState) -> anyhow::Result<fy
 pub async fn list_expiries(source: String, symbol: String, state: State<'_, SharedState>) -> Res<Vec<ExpiryItem>> {
     if source == "fyers" {
         let creds = active_fyers_creds(&state).await.map_err(err)?;
-        let data = fyers::fetch(&state.config.fyers, &creds, &symbol, 1, None).await.map_err(err)?;
+        let data = fyers::fetch(&state.config.fyers, &creds, &symbol, 1, None, crate::market::fyers_api::Priority::User)
+            .await
+            .map_err(err)?;
         return Ok(fyers::expiries(&data));
     }
     let list = symbols::fetch_expiries(&state.config, &symbol).await.map_err(err)?;
@@ -278,6 +358,11 @@ pub async fn set_setting(key: String, value: String, state: State<'_, SharedStat
         // Move the exchange status and the streams over to the new source now.
         state.market_status.set_source(DataSource::from_setting(Some(&value)));
     }
+    if key == "data.fyers_account" {
+        // A different account: what Fyers said about the old token no longer applies.
+        accounts::clear_fyers_rejected();
+        state.fyers_api.health.clear_source(Source::Fyers);
+    }
     Ok(())
 }
 
@@ -337,6 +422,8 @@ pub fn fyers_login_cancel(id: String) {
 /// the header indices again (and lets the data socket retry at once).
 #[tauri::command]
 pub async fn fyers_login_finished(id: String, state: State<'_, SharedState>) -> Res<TestResult> {
+    // A new login: earlier failures belonged to the old token.
+    state.fyers_api.health.clear_source(Source::Fyers);
     let result = match accounts::test(&state.db, &state.config, &id).await {
         Ok(r) => r,
         Err(e) => TestResult { ok: false, message: e.to_string() },

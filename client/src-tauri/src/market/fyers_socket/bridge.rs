@@ -15,6 +15,7 @@ use super::{fyers_is_source, topics, Tick};
 use crate::accounts::{self, FyersAuthState};
 use crate::chain::fyers::{fetch_quotes, Quote};
 use crate::market::events::{IndexSink, IndexTick};
+use crate::market::fyers_api::Priority;
 use crate::market::status::MarketState;
 use crate::state::SharedState;
 use tracing::{info, warn};
@@ -50,7 +51,7 @@ async fn seed_fyers(state: &SharedState, sink: &IndexSink) -> bool {
         Err(_) => return false,
     };
     let open_now = state.market_status.fyers().state == MarketState::Open;
-    match fetch_quotes(&state.config.fyers, &creds, &topics::header_index_symbols()).await {
+    match fetch_quotes(&state.config.fyers, &creds, &topics::header_index_symbols(), Priority::Background).await {
         // The socket may have connected while the call was running; its prices are fresher.
         Ok(_) if state.fyers_hub.is_connected() => true,
         Ok(quotes) => {

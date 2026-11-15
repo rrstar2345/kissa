@@ -105,6 +105,7 @@ pub async fn run(
                     Ok(_) => info!("Options stream [{}] closed gracefully", stream_key),
                     Err(e) => {
                         warn!("Options stream [{}] error: {}", stream_key, e);
+                        crate::market::fyers_api::nse_fail("option stream", &e.to_string());
                         let mut s = stats.write().await;
                         let stat = s.ensure_stream(&stream_key);
                         stat.last_error = Some(e.to_string());
@@ -255,6 +256,7 @@ async fn stream_active(
         let stat = s.ensure_stream(stream_key);
         stat.state = ConnState::Connected;
     }
+    crate::market::fyers_api::nse_ok("option stream");
 
     let (_, mut read) = ws_stream.split();
 

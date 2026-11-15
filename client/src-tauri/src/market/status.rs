@@ -514,20 +514,24 @@ async fn nse_json(url: &str) -> Result<String> {
 }
 
 pub async fn fetch_nse(cfg: &AppConfig) -> Result<Parsed> {
-    parse_nse(&nse_json(&cfg.system.market_status.base).await?)
+    let result = async { parse_nse(&nse_json(&cfg.system.market_status.base).await?) }.await;
+    match &result {
+        Ok(_) => crate::market::fyers_api::nse_ok("marketStatus"),
+        Err(e) => crate::market::fyers_api::nse_fail("marketStatus", &e.to_string()),
+    }
+    result
 }
 
 pub async fn fetch_fyers(cfg: &FyersConfig, creds: &FyersCreds) -> Result<Parsed> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
-    let resp = client
-        .get(&cfg.status_url)
-        .header("Authorization", format!("{}:{}", creds.app_id, creds.access_token))
-        .send()
-        .await
-        .map_err(|e| anyhow!("Fyers request failed: {e}"))?;
-    let status = resp.status();
-    let body = resp.text().await?;
-    parse_fyers(&body).map_err(|e| anyhow!("{e} (HTTP {status})"))
+    let req = crate::market::fyers_api::get(&cfg.status_url, creds);
+    let reply = crate::market::fyers_api::send(
+        "marketStatus",
+        crate::market::fyers_api::Category::Data,
+        crate::market::fyers_api::Priority::Background,
+        req,
+    )
+    .await?;
+    parse_fyers(&reply.body).map_err(|e| anyhow!("{e} (HTTP {})", reply.status))
 }
 
 // ---------------------------------------------------------------- holidays ---

@@ -16,6 +16,7 @@ use super::ExpiryItem;
 use crate::charts::instrument::option_key;
 use crate::charts::recorder::Recorder;
 use crate::market::events::{IndexStore, IndexTick, LegTick, OptionTick};
+use crate::market::fyers_api::{self, Category, PollerGuard, Priority};
 use crate::market::fyers_socket::Hub;
 use crate::market::streamers::options;
 use crate::market::market_clock::{self, SharedSessionState};
@@ -208,6 +209,8 @@ pub fn spawn_fyers(
         let mut fetched_closed = false;
         // After a socket failure, REST polling runs until this time.
         let mut socket_retry_at: Option<tokio::time::Instant> = None;
+        // Counted for pacing only while this chain polls over REST.
+        let mut rest_poller: Option<PollerGuard> = None;
         loop {
             // Subscribe before reading the status, so a change right after is not missed.
             let mut changes = status.subscribe_fyers();
@@ -217,6 +220,7 @@ pub fn spawn_fyers(
                 && polling
                 && socket_retry_at.is_none_or(|t| tokio::time::Instant::now() >= t);
             if try_socket {
+                rest_poller = None;
                 let began = tokio::time::Instant::now();
                 match live(&app, &label, &cfg, &creds, &status, &recorder, &ltp, &hub, &symbol, &expiry).await {
                     Ok(()) => {
@@ -235,8 +239,11 @@ pub fn spawn_fyers(
             }
 
             if polling || !fetched_closed {
+                if polling && rest_poller.is_none() {
+                    rest_poller = fyers_api::poller();
+                }
                 let mut ok = false;
-                match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(&expiry.value)).await {
+                match fyers::fetch(&cfg.fyers, &creds, &symbol, cfg.fyers.strike_count, Some(&expiry.value), Priority::Background).await {
                     Ok(data) => {
                         ok = true;
                         let snap = fyers::to_snapshot(&data, &symbol, &expiry, cfg.risk_free_rate);
@@ -260,8 +267,10 @@ pub fn spawn_fyers(
             }
 
             if polling {
-                tokio::time::sleep(poll).await;
+                // Stretched when the day's call budget would not last until the close.
+                tokio::time::sleep(fyers_api::paced(Category::Data, poll)).await;
             } else {
+                rest_poller = None;
                 // Closed or pre-open: prices do not move. Wake when Fyers reports a
                 // change; re-check hourly, or in a minute after a failed fetch.
                 let wait = Duration::from_secs(if fetched_closed { 3600 } else { 60 });
@@ -337,7 +346,7 @@ async fn live(
 ) -> anyhow::Result<()> {
     let fy = &cfg.fyers;
     let date = NaiveDate::parse_from_str(&expiry.date, "%Y-%m-%d")?;
-    let data = fyers::fetch(fy, creds, symbol, fy.strike_count, Some(&expiry.value)).await?;
+    let data = fyers::fetch(fy, creds, symbol, fy.strike_count, Some(&expiry.value), Priority::User).await?;
     let mut plan = fyers::stream_plan(fy, creds, &data).await;
     if plan.options.is_empty() {
         return Err(anyhow::anyhow!("the chain response has no streamable contracts"));
@@ -371,8 +380,8 @@ async fn live(
     let _ = changes.borrow_and_update();
 
     let refresh_every = Duration::from_secs(fy.chain_refresh_secs.max(10));
-    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + refresh_every, refresh_every);
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Each refresh is scheduled after the last one, stretched to the call budget.
+    let mut next_refresh = tokio::time::Instant::now() + fyers_api::paced(Category::Data, refresh_every);
     let mut ticker = tokio::time::interval(Duration::from_millis(SNAPSHOT_MS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -459,8 +468,10 @@ async fn live(
                 crate::emit_stats::count("chain-snapshot");
                 let _ = app.emit_to(label, SNAPSHOT_EVENT, engine.snapshot(spot.as_ref(), vix));
             }
-            _ = refresh.tick() => {
-                match fyers::fetch(fy, creds, symbol, fy.strike_count, Some(&expiry.value)).await {
+            _ = tokio::time::sleep_until(next_refresh) => {
+                let result = fyers::fetch(fy, creds, symbol, fy.strike_count, Some(&expiry.value), Priority::Background).await;
+                next_refresh = tokio::time::Instant::now() + fyers_api::paced(Category::Data, refresh_every);
+                match result {
                     Ok(d) => {
                         let np = fyers::stream_plan(fy, creds, &d).await;
                         if !np.options.is_empty() {

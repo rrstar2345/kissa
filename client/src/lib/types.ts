@@ -97,13 +97,47 @@ export interface MarketStatus {
   fyers: SourceStatus;
   /** Prices are ticking from the selected source in an open session. */
   live: boolean;
-  /** Feed indicator label: Live, No ticks, Connecting, Error, Pre-open, Closed or Checking. */
+  /** Feed indicator label: Live, No ticks, Connecting, Error, Pre-open, Closed, Checking, API error or Rate limited. */
   feed: string;
   /** Tooltip for the feed indicator: which stream, and its error if any. */
   feedDetail: string;
   /** Login state of the Fyers data account; null unless Fyers is the data source. */
   fyersAuth: FyersAuth | null;
+  /** A data API of the selected source is failing; null when all is well. */
+  apiHealth: ApiIssue | null;
   streams: StreamStat[];
+}
+
+export interface ApiIssue {
+  source: 'nse' | 'fyers';
+  endpoint: string;
+  kind: 'auth' | 'rateLimited' | 'server' | 'network';
+  message: string;
+  /** UTC epoch ms of the first failure of this run. */
+  sinceMs: number;
+  retryAfterSecs: number | null;
+}
+
+export interface FyersCategoryUsage {
+  category: 'data' | 'account';
+  label: string;
+  usedSec: number;
+  budgetSec: number;
+  usedMin: number;
+  budgetMin: number;
+  usedDay: number;
+  budgetDay: number;
+  /** The plan's own daily limit; the budget is a share of it. */
+  planDay: number;
+  breachesToday: number;
+  paused: string | null;
+}
+
+export interface FyersUsage {
+  plan: string;
+  headroom: number;
+  categories: FyersCategoryUsage[];
+  hints: string[];
 }
 
 export interface FyersAuth {

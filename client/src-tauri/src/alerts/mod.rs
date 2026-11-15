@@ -47,13 +47,15 @@ pub enum Kind {
     Copier,
     /// An algo entered, exited, failed or was disarmed.
     Algo,
+    /// A data API (Fyers, NSE) is failing: rate limited, token rejected, errors.
+    Api,
     /// The Test button. Not a user-selectable event.
     Test,
 }
 
 impl Kind {
     /// The events the user can switch on and off.
-    pub const EVENTS: [Kind; 8] = [
+    pub const EVENTS: [Kind; 9] = [
         Kind::Fill,
         Kind::Rejection,
         Kind::Risk,
@@ -62,6 +64,7 @@ impl Kind {
         Kind::DailySummary,
         Kind::Copier,
         Kind::Algo,
+        Kind::Api,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -74,6 +77,7 @@ impl Kind {
             Kind::DailySummary => "daily_summary",
             Kind::Copier => "copier",
             Kind::Algo => "algo",
+            Kind::Api => "api",
             Kind::Test => "test",
         }
     }
@@ -88,6 +92,7 @@ impl Kind {
             Kind::DailySummary => "Daily P&L summary",
             Kind::Copier => "Trade copier",
             Kind::Algo => "Algos",
+            Kind::Api => "Data API problems",
             Kind::Test => "Test",
         }
     }
@@ -102,6 +107,7 @@ impl Kind {
             Kind::DailySummary => "Net P&L of every account after the close, on days with activity.",
             Kind::Copier => "A copy to a child account failed (blocked, rejected, no account) or could not follow a cancel / modify of the master order.",
             Kind::Algo => "An algo placed an entry or exit, could not place an order, or was disarmed (kill switch, loss halt, error).",
+            Kind::Api => "A Fyers or NSE data call is failing: rate limit reached, login rejected, or repeated server / network errors.",
             Kind::Test => "",
         }
     }

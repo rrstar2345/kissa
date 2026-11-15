@@ -17,6 +17,7 @@ import type {
   KillResult,
   InstrumentList,
   ExpiryItem,
+  FyersUsage,
   IndexTick,
   MarketStatus,
   OrderRow,
@@ -39,6 +40,7 @@ import type {
 
 export const api = {
   marketStatus: () => invoke<MarketStatus>('market_status'),
+  fyersUsage: () => invoke<FyersUsage>('fyers_usage'),
   indicesSnapshot: () => invoke<IndexTick[]>('indices_snapshot'),
   listFnoSymbols: () => invoke<string[]>('list_fno_symbols'),
   listExpiries: (source: Source, symbol: string) =>

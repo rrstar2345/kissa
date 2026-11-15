@@ -92,7 +92,7 @@
   const feedDot = $derived(
     market.status?.live
       ? 'bg-success'
-      : ['No ticks', 'Connecting', 'Error'].includes(market.status?.feed ?? '')
+      : ['No ticks', 'Connecting', 'Error', 'API error', 'Rate limited'].includes(market.status?.feed ?? '')
         ? 'bg-warning'
         : 'bg-base-content/30'
   );

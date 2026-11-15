@@ -3,9 +3,9 @@
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use std::time::Duration;
 
 use crate::chain::fyers::FyersCreds;
+use crate::market::fyers_api::{self, Category, Priority};
 use crate::settings::FyersConfig;
 
 /// Segment name from the first four digits of a `fyToken`.
@@ -144,18 +144,12 @@ pub async fn resolve(
     if symbols.is_empty() {
         return Ok(out);
     }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
     for chunk in symbols.chunks(200) {
-        let resp = client
-            .post(&cfg.symbol_token_url)
-            .header("Authorization", format!("{}:{}", creds.app_id, creds.access_token))
-            .json(&serde_json::json!({ "symbols": chunk }))
-            .send()
+        let req = fyers_api::post(&cfg.symbol_token_url, creds).json(&serde_json::json!({ "symbols": chunk }));
+        let reply = fyers_api::send("symbol-token", Category::Data, Priority::Background, req)
             .await
             .map_err(|e| anyhow!("Fyers symbol lookup failed: {e}"))?;
-        let body: serde_json::Value = resp
-            .json()
-            .await
+        let body: serde_json::Value = serde_json::from_str(&reply.body)
             .map_err(|e| anyhow!("Fyers symbol lookup returned an unexpected response: {e}"))?;
         if body.get("s").and_then(|s| s.as_str()) != Some("ok") {
             let m = body.get("message").and_then(|m| m.as_str()).unwrap_or("error");

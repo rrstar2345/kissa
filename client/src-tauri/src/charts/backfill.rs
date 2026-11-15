@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use super::{instrument, store, Bar, BackfillResult};
 use crate::chain::fyers::FyersCreds;
+use crate::market::fyers_api::{self, Category, Priority};
 use crate::settings::FyersConfig;
 
 struct Fetched {
@@ -58,7 +59,6 @@ fn parse_candles(body: &Value) -> Result<Fetched> {
 }
 
 async fn fetch_window(
-    client: &reqwest::Client,
     cfg: &FyersConfig,
     creds: &FyersCreds,
     symbol: &str,
@@ -67,27 +67,35 @@ async fn fetch_window(
     to: i64,
 ) -> Result<Fetched> {
     let (from_s, to_s) = (from.to_string(), to.to_string());
-    let resp = client
-        .get(&cfg.history_url)
-        .header("Authorization", format!("{}:{}", creds.app_id, creds.access_token))
-        .query(&[
-            ("symbol", symbol),
-            ("resolution", resolution),
-            ("date_format", "0"),
-            ("range_from", from_s.as_str()),
-            ("range_to", to_s.as_str()),
-            ("cont_flag", "1"),
-            ("oi_flag", "1"),
-        ])
-        .send()
+    let req = fyers_api::get(&cfg.history_url, creds).query(&[
+        ("symbol", symbol),
+        ("resolution", resolution),
+        ("date_format", "0"),
+        ("range_from", from_s.as_str()),
+        ("range_to", to_s.as_str()),
+        ("cont_flag", "1"),
+        ("oi_flag", "1"),
+    ]);
+    let reply = fyers_api::send("history", Category::Data, Priority::Background, req)
         .await
         .map_err(|e| anyhow!("Fyers history request failed: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().await?;
+    let (status, text) = (reply.status, reply.body);
     let body: Value = serde_json::from_str(&text).map_err(|_| {
-        anyhow!("Fyers returned an unexpected response (HTTP {status}): {}", &text[..text.len().min(200)])
+        anyhow!("Fyers returned an unexpected response (HTTP {status}): {}", text.chars().take(200).collect::<String>())
     })?;
     parse_candles(&body)
+}
+
+/// The days of history the plan serves for `tf` (`1m` / `1d`): Standard gives
+/// 5 years of daily and 1 year of intraday candles. `0` = no clamp.
+pub fn clamp_days(cfg: &FyersConfig, tf: &str, days: u32) -> u32 {
+    let l = cfg.limits();
+    let max = if tf == "1d" { l.history_daily_days } else { l.history_intraday_days };
+    if max == 0 {
+        days
+    } else {
+        days.min(max)
+    }
 }
 
 /// Backfill `days` of `interval` (`1m` or `1d`) for an instrument.
@@ -108,7 +116,8 @@ pub async fn backfill(
     if candidates.is_empty() {
         return Err(anyhow!("Unrecognised instrument: {inst}"));
     }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(20)).build()?;
+    // Ask for no more than the plan serves; older ranges would only burn calls.
+    let days = clamp_days(cfg, tf, days);
     let now = Utc::now().timestamp();
     let start = now - days.max(1) as i64 * 86_400;
 
@@ -118,7 +127,7 @@ pub async fn backfill(
         let mut to = now;
         while to > start {
             let from = (to - window_days * 86_400).max(start);
-            match fetch_window(&client, cfg, creds, &symbol, resolution, from, to).await {
+            match fetch_window(cfg, creds, &symbol, resolution, from, to).await {
                 Ok(f) => all.extend(f.bars),
                 Err(e) => {
                     last_err = Some(e);
@@ -163,6 +172,16 @@ mod tests {
         assert_eq!(f.bars[0].oi, None);
         assert_eq!(f.bars[1].oi, Some(5500.0));
         assert_eq!(f.bars[1].volume, 900.0);
+    }
+
+    #[test]
+    fn history_is_clamped_to_the_plan() {
+        let mut cfg = FyersConfig::default();
+        assert_eq!(clamp_days(&cfg, "1m", 400), 365);
+        assert_eq!(clamp_days(&cfg, "1m", 30), 30);
+        assert_eq!(clamp_days(&cfg, "1d", 4000), 5 * 365);
+        cfg.plan = "prime".into();
+        assert_eq!(clamp_days(&cfg, "1m", 4000), 4000);
     }
 
     #[test]
