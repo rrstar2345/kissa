@@ -565,13 +565,47 @@ mod tests {
         assert_eq!(f.limits().headroom, 0.5);
     }
 
+    fn base(url: &str, port: u16) -> Result<String, String> {
+        ServerConfig { url: url.into(), port }.base_url()
+    }
+
     #[test]
     fn server_url_rules() {
-        let s = ServerConfig { url: "https://proxy.example.com".into(), port: 8443 };
-        assert_eq!(s.base_url().unwrap(), "https://proxy.example.com:8443");
-        let s = ServerConfig { url: "http://example.com".into(), port: 0 };
-        assert!(s.base_url().is_err());
-        let s = ServerConfig { url: "http://localhost".into(), port: 9000 };
-        assert_eq!(s.base_url().unwrap(), "http://localhost:9000");
+        assert_eq!(base("https://proxy.example.com", 8443).unwrap(), "https://proxy.example.com:8443");
+        assert!(base("http://example.com", 0).is_err());
+        assert_eq!(base("http://localhost", 9000).unwrap(), "http://localhost:9000");
+    }
+
+    #[test]
+    fn server_url_rejects_empty_and_bad_scheme() {
+        assert!(base("", 0).is_err());
+        assert!(base("   ", 8443).is_err());
+        assert!(base("proxy.example.com", 8443).is_err());
+        assert!(base("ftp://proxy.example.com", 0).is_err());
+        assert!(base("https://", 443).is_err());
+        assert!(base("https:///path", 443).is_err());
+    }
+
+    #[test]
+    fn server_url_port_handling() {
+        // Own port wins over the separate port field.
+        assert_eq!(base("https://proxy.example.com:9443", 8443).unwrap(), "https://proxy.example.com:9443");
+        // No port field: URL unchanged.
+        assert_eq!(base("https://proxy.example.com", 0).unwrap(), "https://proxy.example.com");
+        // A path means the port is not appended.
+        assert_eq!(base("https://proxy.example.com/api", 8443).unwrap(), "https://proxy.example.com/api");
+    }
+
+    #[test]
+    fn server_url_trims_and_accepts_any_scheme_case() {
+        assert_eq!(base("  https://proxy.example.com/  ", 8443).unwrap(), "https://proxy.example.com:8443");
+        assert_eq!(base("HTTPS://Proxy.Example.com", 0).unwrap(), "HTTPS://Proxy.Example.com");
+    }
+
+    #[test]
+    fn plain_http_only_for_localhost() {
+        assert_eq!(base("http://127.0.0.1", 8080).unwrap(), "http://127.0.0.1:8080");
+        assert_eq!(base("http://localhost:9000", 1).unwrap(), "http://localhost:9000");
+        assert!(base("http://192.168.1.10", 8080).is_err());
     }
 }

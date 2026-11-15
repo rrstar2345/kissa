@@ -68,10 +68,11 @@ All items below are tested by the user unless noted. Details are kept only where
   - **Rejected token**: an `Auth` outcome calls `accounts::mark_fyers_rejected()`; `fyers_auth` then reports `expired` (header Log in badge) and Background calls are refused until a User call succeeds or a login completes (`clear_fyers_rejected`). The login exchange uses `judge_auth = false`, so a wrong auth code does not count.
   - **Unverified against live Fyers**: the auth error codes (`-8`, `-15`, `-16`, `-17`), which endpoints Fyers counts as Data vs Transaction + User Info, whether 429s carry `Retry-After`, and the day reset moment (assumed IST midnight).
 
-## Roadmap (remaining)
-Confirm scope with the user before starting each. Done: #1 signals, #2 risk controls, #3 alerts, #4 trade copier, #5 algo trading, #6 backtesting, #7 screen refresh, #8 top bar P&L, #9 open positions dock, #10 dashboard revamp, #11 multiple app windows, #12 Orders tab navigation, #13 Fyers data socket, #14 market status follows the data source, #15 Fyers header index seed, #16 Fyers rate limiting and API failure indicator. Items are numbered in the order they should be done.
+## Unit tests (Roadmap #17 done; `cargo test --lib`: 225 passed)
+Pure logic is covered across the backend (rules engine, paper broker, risk, charges, pricing, period aggregation, alerts, Fyers proto / limiter / health, settings). #17 added `ServerConfig::base_url` cases (`settings.rs`) and `plan_exit` (`trading/service/exit.rs`, the pure side / lots / LIMIT price maths used by Exit and Exit All). Known gap: `base_url` treats any `http://localhost...` prefix as local (e.g. `http://localhost.evil.com`), not tightened or tested.
 
-**17. Unit tests.** `ServerConfig::base_url` and the exit maths (`service/exit.rs`: LIMIT price at LTP +- `exit_buffer_ticks`, tick rounding). The user runs `cargo test --lib`; sandbox has no Cargo.
+## Roadmap (remaining)
+Confirm scope with the user before starting each. Done: #1 signals, #2 risk controls, #3 alerts, #4 trade copier, #5 algo trading, #6 backtesting, #7 screen refresh, #8 top bar P&L, #9 open positions dock, #10 dashboard revamp, #11 multiple app windows, #12 Orders tab navigation, #13 Fyers data socket, #14 market status follows the data source, #15 Fyers header index seed, #16 Fyers rate limiting and API failure indicator, #17 unit tests. Items are numbered in the order they should be done.
 
 **18. Event / audit journal.** One searchable log of what happened (orders placed / modified / cancelled, risk halts, kill switch, algo arm / disarm, copier actions, login events, settings changes), with filters. Reuse existing events and tables (`algo_journal`, `copy_links`, `alert_outbox`) where they fit; decide the retention.
 

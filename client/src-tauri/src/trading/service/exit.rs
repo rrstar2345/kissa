@@ -11,6 +11,18 @@ use super::TradingService;
 use crate::trading::pricing::exit_price;
 use crate::trading::{store, today_ist, ExitAllResult, OrderRow, PlaceOrderInput, Position};
 
+/// Side, whole lots and LIMIT price needed to flatten a position.
+/// Pure so the maths can be tested without a database.
+fn plan_exit(net_qty: i64, lot_size: i64, ltp: Option<f64>, buffer_ticks: u32) -> Result<(&'static str, i64, f64)> {
+    let ltp = ltp.filter(|l| l.is_finite() && *l > 0.0).ok_or_else(|| anyhow!("no price available yet"))?;
+    if lot_size <= 0 || net_qty == 0 || net_qty.abs() % lot_size != 0 {
+        return Err(anyhow!("quantity is not a whole number of lots"));
+    }
+    let lots = net_qty.abs() / lot_size;
+    let side = if net_qty > 0 { "SELL" } else { "BUY" };
+    Ok((side, lots, exit_price(side, ltp, buffer_ticks)))
+}
+
 fn contract_label(p: &Position) -> String {
     format!("{} {} {} {}", p.symbol, p.expiry, p.strike, if p.is_call { "CE" } else { "PE" })
 }
@@ -36,13 +48,7 @@ impl TradingService {
         let mut p = p.clone();
         p.net_qty = now.net_qty;
         let p = &p;
-        let ltp = p.ltp.filter(|l| l.is_finite() && *l > 0.0).ok_or_else(|| anyhow!("no price available yet"))?;
-        if p.lot_size <= 0 || p.net_qty == 0 || p.net_qty.abs() % p.lot_size != 0 {
-            return Err(anyhow!("quantity is not a whole number of lots"));
-        }
-        let lots = p.net_qty.abs() / p.lot_size;
-        let side = if p.net_qty > 0 { "SELL" } else { "BUY" };
-        let price = exit_price(side, ltp, self.cfg.trading.exit_buffer_ticks);
+        let (side, lots, price) = plan_exit(p.net_qty, p.lot_size, p.ltp, self.cfg.trading.exit_buffer_ticks)?;
 
         let mut cancelled = 0;
         for o in store::open_orders(&self.pool, None).await? {
@@ -99,5 +105,51 @@ impl TradingService {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_position_sells_below_ltp() {
+        let (side, lots, price) = plan_exit(130, 65, Some(100.0), 2).unwrap();
+        assert_eq!((side, lots), ("SELL", 2));
+        assert!((price - 99.90).abs() < 1e-9);
+    }
+
+    #[test]
+    fn short_position_buys_above_ltp() {
+        let (side, lots, price) = plan_exit(-30, 30, Some(100.0), 2).unwrap();
+        assert_eq!((side, lots), ("BUY", 1));
+        assert!((price - 100.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_buffer_rounds_ltp_to_tick() {
+        let (_, _, price) = plan_exit(65, 65, Some(100.03), 0).unwrap();
+        assert!((price - 100.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn price_floors_at_one_tick() {
+        let (_, _, price) = plan_exit(65, 65, Some(0.10), 10).unwrap();
+        assert!((price - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn missing_or_bad_price_is_rejected() {
+        for ltp in [None, Some(0.0), Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            assert!(plan_exit(65, 65, ltp, 2).is_err(), "{ltp:?}");
+        }
+    }
+
+    #[test]
+    fn partial_lots_flat_or_bad_lot_size_are_rejected() {
+        assert!(plan_exit(100, 65, Some(100.0), 2).is_err());
+        assert!(plan_exit(0, 65, Some(100.0), 2).is_err());
+        assert!(plan_exit(65, 0, Some(100.0), 2).is_err());
+        assert!(plan_exit(65, -65, Some(100.0), 2).is_err());
     }
 }
