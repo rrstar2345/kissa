@@ -649,6 +649,12 @@ export interface ExportRequest {
   accountId: string | null;
 }
 
+export interface BackupResult {
+  /** Folder created inside the chosen one. */
+  folder: string;
+  files: { name: string; bytes: number }[];
+}
+
 export interface ExportResult {
   /** Rows found (0 = nothing to export). */
   rows: number;

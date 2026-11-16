@@ -734,6 +734,49 @@ pub async fn export_csv(
     Ok(ExportResult { rows: out.rows, path: Some(path.display().to_string()) })
 }
 
+/// Back up `kissa.db` and `bars.duckdb` into a new folder inside one the user
+/// picks. `None` when the folder dialog was cancelled.
+#[tauri::command]
+pub async fn backup_databases(
+    window: tauri::WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Res<Option<crate::backup::BackupResult>> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Choose a folder for the backup")
+        .pick_folder(move |picked| {
+            let _ = tx.send(picked);
+        });
+    let picked = rx.await.map_err(|_| "The folder dialog closed unexpectedly.".to_string())?;
+    let Some(picked) = picked else {
+        return Ok(None); // cancelled
+    };
+    let parent = picked.into_path().map_err(|e| e.to_string())?;
+
+    match crate::backup::run(&state.db, &state.bars, &state.paths, &parent).await {
+        Ok(out) => {
+            audit::record(
+                Entry::new(AuditCategory::System, "backup", format!("Database backup saved to {}", out.folder))
+                    .actor(Actor::User)
+                    .detail(serde_json::json!({ "folder": out.folder, "files": out.files })),
+            );
+            Ok(Some(out))
+        }
+        Err(e) => {
+            audit::record(
+                Entry::new(AuditCategory::System, "backup_failed", format!("Database backup failed: {e}"))
+                    .actor(Actor::User),
+            );
+            Err(e.to_string())
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn contract_info(
     symbol: String,

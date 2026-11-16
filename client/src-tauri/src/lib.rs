@@ -3,6 +3,7 @@ mod alerts;
 mod algo;
 mod audit;
 mod backtest;
+mod backup;
 mod chain;
 mod charts;
 mod commands;
@@ -271,6 +272,7 @@ pub fn run() {
             commands::get_dashboard,
             commands::get_performance,
             commands::export_csv,
+            commands::backup_databases,
             commands::exit_position,
             commands::exit_all,
             commands::get_risk,

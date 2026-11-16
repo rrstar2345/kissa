@@ -22,6 +22,7 @@ import type {
   InstrumentList,
   ExpiryItem,
   FyersUsage,
+  BackupResult,
   IndexTick,
   MarketStatus,
   OrderRow,
@@ -136,6 +137,8 @@ export const api = {
   /** `anchor`: YYYY-MM-DD (daily) or YYYY-MM (monthly, yearly). */
   getPerformance: (view: DashView, anchor: string, accountId: string | null) =>
     invoke<Performance>('get_performance', { view, anchor, accountId }),
+  /** Folder dialog, then a backup of both databases; null when cancelled. */
+  backupDatabases: () => invoke<BackupResult | null>('backup_databases'),
   exportCsv: (request: ExportRequest) => invoke<ExportResult>('export_csv', { request }),
   contractInfo: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
     invoke<ContractInfo>('contract_info', { symbol, expiry, strike, isCall }),

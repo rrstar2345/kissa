@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import { every } from '$lib/timers';
-  import type { FyersUsage, TestResult } from '$lib/types';
+  import type { BackupResult, FyersUsage, TestResult } from '$lib/types';
 
   // server connection
   let url = $state('');
@@ -35,6 +35,29 @@
     return () => clearInterval(t);
   });
   const pct = (used: number, budget: number) => (budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0);
+
+  // database backup
+  let backingUp = $state(false);
+  let backupMsg = $state<TestResult | null>(null);
+  let backupInfo = $state<BackupResult | null>(null);
+  const mb = (b: number) => (b / 1048576).toFixed(1) + ' MB';
+
+  async function backup() {
+    backingUp = true;
+    backupMsg = null;
+    backupInfo = null;
+    try {
+      const r = await api.backupDatabases();
+      if (r) {
+        backupInfo = r;
+        backupMsg = { ok: true, message: `Backup saved to ${r.folder}` };
+      }
+    } catch (e) {
+      backupMsg = { ok: false, message: String(e) };
+    } finally {
+      backingUp = false;
+    }
+  }
 
   async function load() {
     try {
@@ -179,6 +202,27 @@
       {/each}
     </section>
   {/if}
+
+  <section class="flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-5">
+    <div>
+      <h2 class="font-semibold">Backup</h2>
+      <p class="text-sm text-base-content/60">
+        Saves orders, trades, accounts, settings and chart bars into a new folder you choose. Passwords, API keys and
+        tokens are kept in the OS keychain and are <strong>not</strong> included; you will need to enter them again on a new machine.
+      </p>
+    </div>
+    {#if backupMsg}
+      <div role="status" class="alert {backupMsg.ok ? 'alert-success' : 'alert-error'} alert-soft py-2 text-sm break-words">
+        {backupMsg.message}
+        {#if backupInfo}({backupInfo.files.map((f) => `${f.name} ${mb(f.bytes)}`).join(', ')}){/if}
+      </div>
+    {/if}
+    <div>
+      <button class="btn btn-primary btn-sm" onclick={backup} disabled={backingUp}>
+        {#if backingUp}<span class="loading loading-spinner loading-xs"></span>{/if} Back up databases…
+      </button>
+    </div>
+  </section>
 
   <section class="flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-5">
     <div>
