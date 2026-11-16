@@ -13,6 +13,8 @@ pub const APP_NAME: &str = "kissa";
 pub struct AppPaths {
     pub root: PathBuf,
     pub db_file: PathBuf,
+    /// DuckDB file holding the chart bars (see `charts::duck`).
+    pub bars_file: PathBuf,
     pub settings_file: PathBuf,
 }
 
@@ -24,6 +26,7 @@ pub fn setup_app_folders() -> io::Result<AppPaths> {
     fs::create_dir_all(&root)?;
     Ok(AppPaths {
         db_file: root.join("kissa.db"),
+        bars_file: root.join("bars.duckdb"),
         settings_file: root.join("settings.json"),
         root,
     })

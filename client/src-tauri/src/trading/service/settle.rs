@@ -66,9 +66,9 @@ impl TradingService {
     async fn settle_one(&self, p: &OpenPos) -> Result<()> {
         // The contract's own close on expiry day; failing that, its latest
         // recorded close (the app was not running that day), and the order says so.
-        let (price, note) = match store::expiry_close(&self.pool, &p.instrument, &p.expiry).await {
+        let (price, note) = match crate::charts::store::expiry_close(&self.bars, &p.instrument, &p.expiry).await {
             Some(px) => (px, format!("Expiry settlement at the last 1m close, {}", p.expiry)),
-            None => match store::last_close(&self.pool, &p.instrument).await {
+            None => match crate::charts::store::last_close(&self.bars, &p.instrument).await {
                 Some(px) => (px, "Expiry settlement at the last recorded close (no bar on the expiry day)".to_string()),
                 None => {
                     warn!("No price recorded for {}; it stays open until one exists", p.instrument);

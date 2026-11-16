@@ -41,8 +41,10 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 
-# Local storage: SQLite for accounts / orders / prefs, OS keychain for secrets
+# Local storage: SQLite for accounts / orders / prefs, DuckDB for chart bars, OS keychain for secrets
 sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "chrono"] }
+# `bundled` compiles DuckDB from source (slow first build, needs a C++ toolchain; no system library).
+duckdb = { version = "1.20000", features = ["bundled"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 async-trait = "0.1.92"
 

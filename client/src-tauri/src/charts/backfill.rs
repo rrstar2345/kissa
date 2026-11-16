@@ -8,9 +8,9 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::Value;
-use sqlx::SqlitePool;
 use std::time::Duration;
 
+use super::duck::BarStore;
 use super::{instrument, store, Bar, BackfillResult};
 use crate::chain::fyers::FyersCreds;
 use crate::market::fyers_api::{self, Category, Priority};
@@ -102,7 +102,7 @@ pub fn clamp_days(cfg: &FyersConfig, tf: &str, days: u32) -> u32 {
 pub async fn backfill(
     cfg: &FyersConfig,
     creds: &FyersCreds,
-    pool: &SqlitePool,
+    bars: &BarStore,
     inst: &str,
     interval: &str,
     days: u32,
@@ -148,7 +148,7 @@ pub async fn backfill(
         }
         all.sort_by_key(|b| b.ts);
         all.dedup_by_key(|b| b.ts);
-        let inserted = store::insert_backfill(pool, inst, tf, &all).await?;
+        let inserted = store::insert_backfill(bars, inst, tf, &all).await?;
         return Ok(BackfillResult { symbol, fetched: all.len(), inserted });
     }
     match last_err {

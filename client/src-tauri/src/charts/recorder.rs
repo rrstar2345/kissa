@@ -1,11 +1,10 @@
 //! Folds live ticks into in-memory 1m bars, pushes changed bars to the UI
-//! four times a second (`bar-update` event) and flushes to SQLite every few
+//! four times a second (`bar-update` event) and flushes to DuckDB every few
 //! seconds.
 //! Only trades inside the 09:15-15:30 IST session are recorded.
 
 use chrono::{DateTime, Datelike, Timelike, Weekday};
 use serde::Serialize;
-use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -13,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 use tracing::warn;
 
+use super::duck::BarStore;
 use super::{store, Bar};
 
 const IST: i64 = 5 * 3600 + 30 * 60;
@@ -33,7 +33,7 @@ struct Inner {
 }
 
 pub struct Recorder {
-    pool: Option<SqlitePool>,
+    bars: Option<BarStore>,
     inner: Mutex<Inner>,
     /// Woken when a bar changes, so the UI emitter sleeps while idle.
     wake: Notify,
@@ -60,9 +60,9 @@ pub fn in_session(ts: i64) -> bool {
 }
 
 impl Recorder {
-    pub fn new(pool: SqlitePool) -> Arc<Self> {
+    pub fn new(bars: BarStore) -> Arc<Self> {
         Arc::new(Self {
-            pool: Some(pool),
+            bars: Some(bars),
             inner: Mutex::new(Inner::default()),
             wake: Notify::new(),
             pinned: RwLock::default(),
@@ -158,8 +158,8 @@ impl Recorder {
             }
         }
         let batch = self.take_unsaved();
-        if let (false, Some(pool)) = (batch.is_empty(), self.pool.as_ref()) {
-            if let Err(e) = store::upsert_live(pool, &batch).await {
+        if let (false, Some(bars)) = (batch.is_empty(), self.bars.as_ref()) {
+            if let Err(e) = store::upsert_live(bars, &batch).await {
                 warn!("Bar flush failed ({} bars): {e}", batch.len());
                 self.requeue(batch);
             }
@@ -199,8 +199,8 @@ impl Recorder {
                     }
                     _ = flush.tick() => {
                         let batch = self.take_unsaved();
-                        if let (false, Some(pool)) = (batch.is_empty(), self.pool.as_ref()) {
-                            if let Err(e) = store::upsert_live(pool, &batch).await {
+                        if let (false, Some(bars)) = (batch.is_empty(), self.bars.as_ref()) {
+                            if let Err(e) = store::upsert_live(bars, &batch).await {
                                 warn!("Bar flush failed ({} bars), will retry: {e}", batch.len());
                                 self.requeue(batch);
                             }
@@ -221,7 +221,7 @@ mod tests {
 
     fn rec() -> Recorder {
         Recorder {
-            pool: None,
+            bars: None,
             inner: Mutex::new(Inner::default()),
             wake: Notify::new(),
             pinned: RwLock::default(),

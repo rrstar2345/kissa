@@ -607,46 +607,6 @@ pub async fn order_counts(pool: &SqlitePool, date: &str) -> Result<HashMap<Strin
     Ok(rows.into_iter().collect())
 }
 
-/// Settlement price of an expired option: the close of the contract's own
-/// last 1-minute bar on its expiry day (IST). A stored daily bar of that day
-/// is used only when no 1-minute bar exists. `None` when nothing was recorded.
-pub async fn expiry_close(pool: &SqlitePool, instrument: &str, expiry_iso: &str) -> Option<f64> {
-    const IST: i64 = 5 * 3600 + 30 * 60;
-    let day = chrono::NaiveDate::parse_from_str(expiry_iso, "%Y-%m-%d").ok()?;
-    let start = day.and_hms_opt(0, 0, 0)?.and_utc().timestamp() - IST;
-    let end = start + 86_400;
-    for tf in ["1m", "1d"] {
-        let row = sqlx::query_as::<_, (f64,)>(
-            "SELECT close FROM bars WHERE instrument = ? AND tf = ? AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 1",
-        )
-        .bind(instrument)
-        .bind(tf)
-        .bind(start)
-        .bind(end)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
-        if let Some((close,)) = row {
-            if close.is_finite() && close > 0.0 {
-                return Some(close);
-            }
-        }
-    }
-    None
-}
-
-/// Most recent stored bar close for an instrument (used when no live price).
-pub async fn last_close(pool: &SqlitePool, instrument: &str) -> Option<f64> {
-    sqlx::query_as::<_, (f64,)>("SELECT close FROM bars WHERE instrument = ? ORDER BY ts DESC LIMIT 1")
-        .bind(instrument)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .map(|r| r.0)
-}
-
 // ------------------------------------------------------------ dashboard ---
 
 /// Every fill up to `to` of the (account, contract, product) positions that
@@ -728,44 +688,6 @@ mod tests {
     #[test]
     fn zero_quantity_is_ignored() {
         assert_eq!(apply_fill(lot(10, 5.0), 1, 0, 9.0), (lot(10, 5.0), 0.0));
-    }
-
-    #[tokio::test]
-    async fn expiry_close_is_the_last_bar_of_the_expiry_day() {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        crate::charts::store::init(&pool).await.unwrap();
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
-        let start = day.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() - 5 * 3600 - 30 * 60;
-        let put = |inst: &'static str, tf: &'static str, ts: i64, close: f64| {
-            let pool = pool.clone();
-            async move {
-                sqlx::query("INSERT INTO bars (instrument, tf, ts, open, high, low, close) VALUES (?, ?, ?, 1, 1, 1, ?)")
-                    .bind(inst)
-                    .bind(tf)
-                    .bind(ts)
-                    .bind(close)
-                    .execute(&pool)
-                    .await
-                    .unwrap();
-            }
-        };
-        let a = "OPT:NIFTY:2026-11-24:24000:CE";
-        put(a, "1m", start - 600, 99.0).await; // the day before: ignored
-        put(a, "1m", start + 9 * 3600 + 15 * 60, 40.0).await;
-        put(a, "1m", start + 15 * 3600 + 29 * 60, 12.5).await; // last bar of the day
-        put(a, "1m", start + 86_400 + 3600, 77.0).await; // the day after: ignored
-        assert_eq!(expiry_close(&pool, a, "2026-11-24").await, Some(12.5));
-
-        let b = "OPT:NIFTY:2026-11-24:24500:PE";
-        put(b, "1d", start, 3.0).await; // only a daily bar: used as the fallback
-        assert_eq!(expiry_close(&pool, b, "2026-11-24").await, Some(3.0));
-
-        assert_eq!(expiry_close(&pool, "OPT:NIFTY:2026-11-24:25000:PE", "2026-11-24").await, None);
-        assert_eq!(expiry_close(&pool, a, "not-a-date").await, None);
     }
 
     #[tokio::test]

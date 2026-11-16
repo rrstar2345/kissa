@@ -60,7 +60,7 @@ impl TradingService {
             let (ltp, source) = match self.quote(&p.instrument) {
                 Some((v, true)) => (Some(v), "live"),
                 Some((v, false)) => (Some(v), "last"),
-                None => match store::last_close(&self.pool, &p.instrument).await {
+                None => match crate::charts::store::last_close(&self.bars, &p.instrument).await {
                     Some(v) => (Some(v), "last"),
                     None => (None, "none"),
                 },

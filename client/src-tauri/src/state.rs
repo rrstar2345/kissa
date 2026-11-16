@@ -24,6 +24,8 @@ pub struct AppState {
     pub live: LiveConfig,
     pub paths: AppPaths,
     pub db: SqlitePool,
+    /// Chart bars (DuckDB).
+    pub bars: crate::charts::duck::BarStore,
     pub stats: SharedStats,
     pub session: SharedSessionState,
     /// Exchange open/closed state per data source (NSE, Fyers).

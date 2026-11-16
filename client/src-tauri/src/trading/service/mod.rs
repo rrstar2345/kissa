@@ -47,6 +47,7 @@ use super::store::{self, Fill};
 use super::{BrokerStatus, OrderRow};
 use crate::accounts;
 use crate::alerts::AlertService;
+use crate::charts::duck::BarStore;
 use crate::settings::{AppConfig, LiveConfig, ServerConfig};
 
 fn is_terminal(s: &str) -> bool {
@@ -62,6 +63,8 @@ fn norm_status(s: &str) -> String {
 
 pub struct TradingService {
     pool: SqlitePool,
+    /// Chart bars (DuckDB): last / expiry prices for squaring off and settlement.
+    bars: BarStore,
     /// Settings that reload live (see `LiveConfig`); read through `cfg()`.
     live: LiveConfig,
     ltp: Arc<LtpStore>,
@@ -89,6 +92,7 @@ pub struct TradingService {
 impl TradingService {
     pub fn new(
         pool: SqlitePool,
+        bars: BarStore,
         live: LiveConfig,
         ltp: Arc<LtpStore>,
         app: AppHandle,
@@ -108,6 +112,7 @@ impl TradingService {
         let server_auth = ServerAuth::new(cfg.trading.request_timeout_secs);
         let svc = Arc::new_cyclic(|me| Self {
             pool,
+            bars,
             live,
             ltp,
             app,

@@ -31,6 +31,7 @@ use crate::algo::{bracket_levels, closed_count, lots_for_capital};
 use crate::charts::instrument::{self, Instrument};
 use crate::charts::resample::{self, Interval};
 use crate::charts::rules::{self, eval as rule_eval};
+use crate::charts::duck::BarStore;
 use crate::charts::{store, Bar};
 use crate::settings::{AppConfig, ChargesConfig};
 use crate::trading::charges;
@@ -376,7 +377,7 @@ fn count_gaps(bars: &[Bar], step: i64) -> usize {
         .count()
 }
 
-pub async fn run(pool: &SqlitePool, cfg: &AppConfig, req: BacktestRequest) -> Result<Report> {
+pub async fn run(pool: &SqlitePool, bars_db: &BarStore, cfg: &AppConfig, req: BacktestRequest) -> Result<Report> {
     let interval = resample::parse_interval(&req.interval).ok_or_else(|| anyhow!("Unsupported interval: {}", req.interval))?;
     let (step, daily) = match interval {
         Interval::Min(n) => (n * 60, false),
@@ -430,7 +431,7 @@ pub async fn run(pool: &SqlitePool, cfg: &AppConfig, req: BacktestRequest) -> Re
         }
     }
 
-    let mut bars = store::chart_bars(pool, &req.instrument, interval, MAX_BARS).await?;
+    let mut bars = store::chart_bars(bars_db, &req.instrument, interval, MAX_BARS).await?;
     let loaded = bars.len();
     let closed = closed_count(&bars, step, chrono::Utc::now().timestamp());
     bars.truncate(closed);

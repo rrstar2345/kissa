@@ -519,7 +519,7 @@ pub async fn get_chart(req: ChartRequest, state: State<'_, SharedState>) -> Res<
     let interval = resample::parse_interval(&req.interval)
         .ok_or_else(|| format!("Unsupported interval: {}", req.interval))?;
     state.recorder.flush_now().await;
-    let bars = store::chart_bars(&state.db, &req.instrument, interval, req.limit.unwrap_or(1500))
+    let bars = store::chart_bars(&state.bars, &req.instrument, interval, req.limit.unwrap_or(1500))
         .await
         .map_err(err)?;
     let mut out = indicators::compute(&bars, &req.indicators);
@@ -581,7 +581,7 @@ pub fn validate_ruleset(ruleset: Ruleset) -> Vec<String> {
 
 #[tauri::command]
 pub async fn list_chart_instruments(state: State<'_, SharedState>) -> Res<InstrumentList> {
-    store::list_instruments(&state.db).await.map_err(err)
+    store::list_instruments(&state.bars).await.map_err(err)
 }
 
 /// Fill history gaps from Fyers (needs the Fyers data account to be set).
@@ -593,7 +593,7 @@ pub async fn backfill_chart(
     state: State<'_, SharedState>,
 ) -> Res<BackfillResult> {
     let creds = active_fyers_creds(&state).await.map_err(err)?;
-    backfill::backfill(&state.config.fyers, &creds, &state.db, &instrument, &interval, days)
+    backfill::backfill(&state.config.fyers, &creds, &state.bars, &instrument, &interval, days)
         .await
         .map_err(err)
 }
@@ -1083,5 +1083,5 @@ pub async fn run_backtest(
     state: State<'_, SharedState>,
 ) -> Res<crate::backtest::Report> {
     state.recorder.flush_now().await;
-    crate::backtest::run(&state.db, &state.live.get(), req).await.map_err(err)
+    crate::backtest::run(&state.db, &state.bars, &state.live.get(), req).await.map_err(err)
 }

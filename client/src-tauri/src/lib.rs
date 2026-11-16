@@ -45,6 +45,9 @@ pub fn run() {
             info!("App root: {}", paths.root.display());
 
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
+            // Chart bars live in DuckDB; an older kissa.db's bars are moved over once (backup first).
+            let bars = charts::duck::BarStore::open(&paths.bars_file)?;
+            tauri::async_runtime::block_on(charts::migrate::import_from_sqlite(&pool, &bars, &paths.db_file))?;
             // Audit journal: `audit::record(..)` works from anywhere once started.
             audit::AuditService::start(pool.clone(), app.handle().clone());
             audit::record(audit::Entry::new(
@@ -64,6 +67,7 @@ pub fn run() {
             let live = settings::LiveConfig::new(config.clone());
             let (trading_svc, broker_rx) = trading::service::TradingService::new(
                 pool.clone(),
+                bars.clone(),
                 live.clone(),
                 ltp.clone(),
                 app.handle().clone(),
@@ -79,13 +83,14 @@ pub fn run() {
                 live,
                 paths: paths.clone(),
                 db: pool.clone(),
+                bars: bars.clone(),
                 stats: stats::new_shared_stats(),
                 session: market_clock::new_shared_session_state(market_status.clone()),
                 market_status,
                 indices: new_index_store(),
                 fno: RwLock::new(Vec::new()),
                 chain: Mutex::new(std::collections::HashMap::new()),
-                recorder: charts::recorder::Recorder::new(pool.clone()),
+                recorder: charts::recorder::Recorder::new(bars.clone()),
                 ltp,
                 trading: trading_svc.clone(),
                 alerts,
@@ -160,9 +165,9 @@ pub fn run() {
                 }
             });
 
-            // Chart data: live bars are folded in memory and flushed to SQLite.
+            // Chart data: live bars are folded in memory and flushed to DuckDB.
             state.recorder.clone().spawn(app.handle().clone(), config.charts.flush_secs);
-            charts::store::spawn_maintenance(state.db.clone(), config.charts.clone());
+            charts::store::spawn_maintenance(state.bars.clone(), config.charts.clone());
 
             // Index streamer: always on; feeds the header ticker and gives
             // the chain engine its underlying price.

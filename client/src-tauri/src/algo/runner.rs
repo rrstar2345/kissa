@@ -258,7 +258,7 @@ impl Runner {
         let mut seen = HashSet::new();
         names.retain(|n| seen.insert(n.clone()));
         for n in names {
-            let bars = chart_store::chart_bars(&self.state.db, &index_key(&n), iv, BAR_LIMIT).await?;
+            let bars = chart_store::chart_bars(&self.state.bars, &index_key(&n), iv, BAR_LIMIT).await?;
             if !bars.is_empty() {
                 return Ok(bars);
             }
@@ -426,7 +426,7 @@ impl Runner {
         bucket: i64,
         in_pos: bool,
     ) -> Result<Option<Decision>> {
-        let bars = chart_store::chart_bars(&self.state.db, key, iv, BAR_LIMIT).await?;
+        let bars = chart_store::chart_bars(&self.state.bars, key, iv, BAR_LIMIT).await?;
         let closed = closed_count(&bars, secs, market_clock::get_ist_now().timestamp());
         let need = warmup_bars(rs);
         let wkey = format!("{}:{key}", algo.id);

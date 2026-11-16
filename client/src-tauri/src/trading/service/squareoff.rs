@@ -52,7 +52,7 @@ impl TradingService {
         // A price first: without one nothing is cancelled or closed (retried next sweep).
         let ltp = match self.quote(&p.instrument) {
             Some((v, _)) => v,
-            None => match store::last_close(&self.pool, &p.instrument).await {
+            None => match crate::charts::store::last_close(&self.bars, &p.instrument).await {
                 Some(v) => v,
                 None => {
                     debug!("No price to square off {}", p.instrument);

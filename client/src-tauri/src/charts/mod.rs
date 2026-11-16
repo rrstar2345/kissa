@@ -2,8 +2,10 @@
 //! Fyers historical backfill.
 
 pub mod backfill;
+pub mod duck;
 pub mod indicators;
 pub mod instrument;
+pub mod migrate;
 pub mod recorder;
 pub mod resample;
 pub mod rules;
