@@ -256,13 +256,17 @@ pub struct FyersAuth {
     pub account_id: Option<String>,
 }
 
-#[allow(dead_code)]
-/// `exp` is the token's expiry (epoch seconds); a token without a readable one counts as valid.
-pub fn classify_fyers_token(token: Option<&str>, now: i64) -> FyersAuthState {
-    let Some(token) = token else { return FyersAuthState::Missing };
-    match crate::market::fyers_socket::topics::parse_jwt(token).and_then(|j| j.exp) {
-        Some(exp) if exp <= now => FyersAuthState::Expired,
-        _ => FyersAuthState::Ok,
+/// Login state from what the lookup found. `exp` is the token's expiry (epoch
+/// seconds); a token without a readable one counts as valid until Fyers rejects it.
+fn auth_state(has_account: bool, token_present: bool, exp: Option<i64>, rejected: bool, now: i64) -> FyersAuthState {
+    if !has_account {
+        FyersAuthState::NoAccount
+    } else if !token_present {
+        FyersAuthState::Missing
+    } else if exp.is_some_and(|e| e <= now) || rejected {
+        FyersAuthState::Expired
+    } else {
+        FyersAuthState::Ok
     }
 }
 
@@ -339,15 +343,13 @@ pub async fn fyers_auth(pool: &SqlitePool) -> FyersAuth {
             c
         }
     };
-    let state = if lookup.account_id.is_none() {
-        FyersAuthState::NoAccount
-    } else if !lookup.token_present {
-        FyersAuthState::Missing
-    } else if lookup.exp.is_some_and(|e| e <= Utc::now().timestamp()) || fyers_rejected() {
-        FyersAuthState::Expired
-    } else {
-        FyersAuthState::Ok
-    };
+    let state = auth_state(
+        lookup.account_id.is_some(),
+        lookup.token_present,
+        lookup.exp,
+        fyers_rejected(),
+        Utc::now().timestamp(),
+    );
     FyersAuth { state, account_id: lookup.account_id }
 }
 
@@ -646,16 +648,23 @@ pub fn fyers_login_cancel(id: &str) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn fyers_token_classification() {
-        use super::{classify_fyers_token as c, FyersAuthState as S};
+    fn fyers_auth_state() {
+        use super::{auth_state as a, FyersAuthState as S};
+        use crate::market::fyers_socket::topics::parse_jwt;
+        let exp_of = |t: &str| parse_jwt(t).and_then(|j| j.exp);
         // exp = 1_900_000_000
         let t = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE5MDAwMDAwMDAsImhzbV9rZXkiOiJhYmMxMjNfa2V5Iiwic3ViIjoieD4_In0.sig";
-        assert_eq!(c(Some(t), 1_899_999_999), S::Ok);
-        assert_eq!(c(Some(t), 1_900_000_000), S::Expired);
-        assert_eq!(c(Some(&format!("APP-100:{t}")), 1_950_000_000), S::Expired);
-        assert_eq!(c(None, 0), S::Missing);
+        let exp = exp_of(t);
+        assert_eq!(exp, Some(1_900_000_000));
+        assert_eq!(a(true, true, exp, false, 1_899_999_999), S::Ok);
+        assert_eq!(a(true, true, exp, false, 1_900_000_000), S::Expired);
+        assert_eq!(exp_of(&format!("APP-100:{t}")), exp);
+        assert_eq!(a(true, false, None, false, 0), S::Missing);
+        assert_eq!(a(false, false, None, false, 0), S::NoAccount);
         // Unreadable token: not treated as expired.
-        assert_eq!(c(Some("opaque-token"), 1_950_000_000), S::Ok);
+        assert_eq!(a(true, true, exp_of("opaque-token"), false, 1_950_000_000), S::Ok);
+        // A token Fyers refused counts as expired even before its `exp`.
+        assert_eq!(a(true, true, exp, true, 0), S::Expired);
     }
 
     use super::*;

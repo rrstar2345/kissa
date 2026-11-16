@@ -254,12 +254,6 @@ impl Decoder {
         Self::default()
     }
 
-    /// Forget all topic ids (call on reconnect: ids are per connection).
-    #[allow(dead_code)]
-    pub fn reset(&mut self) {
-        self.topics.clear();
-    }
-
     pub fn decode(&mut self, frame: &[u8]) -> Incoming {
         if frame.len() < 3 {
             return Incoming::Other(0);

@@ -54,9 +54,6 @@ const HEARTBEAT_FLAG: &str = "HEARTBEAT";
 /// Complete option chain tick message from NSE's `fo/mbp` WSS.
 #[derive(Debug, Deserialize, Clone)]
 struct OptionChainMessage {
-    #[serde(rename = "expiryDates", default)]
-    #[allow(dead_code)]
-    expiry_dates: Option<String>,
     #[serde(rename = "strikePrice")]
     strike_price: f64,
     #[serde(rename = "PE", alias = "pe", default)]

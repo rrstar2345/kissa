@@ -534,82 +534,6 @@ pub async fn fetch_fyers(cfg: &FyersConfig, creds: &FyersCreds) -> Result<Parsed
     parse_fyers(&reply.body).map_err(|e| anyhow!("{e} (HTTP {})", reply.status))
 }
 
-// ---------------------------------------------------------------- holidays ---
-
-/// One NSE F&O trading holiday.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
-pub struct Holiday {
-    pub date: NaiveDate,
-    pub week_day: String,
-    pub description: String,
-    /// Set when NSE runs a special session that day (format not verified).
-    pub morning_session: Option<String>,
-    pub evening_session: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct HolidayResp {
-    #[serde(rename = "FO", default)]
-    fo: Option<Vec<HolidayRaw>>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct HolidayRaw {
-    #[serde(rename = "tradingDate", default)]
-    trading_date: String,
-    #[serde(rename = "weekDay", default)]
-    week_day: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    morning_session: Option<Value>,
-    #[serde(default)]
-    evening_session: Option<Value>,
-}
-
-#[allow(dead_code)]
-fn session_text(v: &Option<Value>) -> Option<String> {
-    match v {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) if s.is_empty() => None,
-        Some(Value::String(s)) => Some(s.clone()),
-        Some(other) => Some(other.to_string()),
-    }
-}
-
-/// NSE `/api/holiday-master?type=trading`: the array under the `FO` key.
-/// Not used yet (the status APIs already reflect holidays); kept for
-/// look-ahead features such as "next trading day".
-#[allow(dead_code)]
-pub fn parse_holidays(body: &str) -> Result<Vec<Holiday>> {
-    let resp: HolidayResp = serde_json::from_str(body).map_err(|e| anyhow!("unreadable NSE holiday list: {e}"))?;
-    let fo = resp.fo.ok_or_else(|| anyhow!("NSE holiday list has no FO array"))?;
-    Ok(fo
-        .into_iter()
-        .filter_map(|h| {
-            let date = NaiveDate::parse_from_str(h.trading_date.trim(), "%d-%b-%Y").ok()?;
-            Some(Holiday {
-                date,
-                week_day: h.week_day,
-                description: h.description,
-                morning_session: session_text(&h.morning_session),
-                evening_session: session_text(&h.evening_session),
-            })
-        })
-        .collect())
-}
-
-#[allow(dead_code)]
-pub async fn fetch_holidays(cfg: &AppConfig) -> Result<Vec<Holiday>> {
-    parse_holidays(&nse_json(&cfg.system.holidays.base).await?)
-}
-
-#[allow(dead_code)]
-pub fn is_trading_holiday(list: &[Holiday], date: NaiveDate) -> bool {
-    list.iter().any(|h| h.date == date)
-}
-
 // ------------------------------------------------------------------ poller ---
 
 #[derive(Default)]
@@ -1031,21 +955,5 @@ mod tests {
         assert!(s.message.contains("shown as Closed"), "{}", s.message);
         // It did not count as the day's open, so a later close does not end the day's checks.
         assert_eq!(p.opened_on, None);
-    }
-
-    #[test]
-    fn holiday_master_parses_the_fo_array() {
-        let body = r#"{"CBM":[],"CD":[],"FO":[
-          {"tradingDate":"15-Jan-2026","weekDay":"Thursday","description":"Municipal Corporation Election - Maharashtra","morning_session":null,"evening_session":null,"Sr_no":1},
-          {"tradingDate":"10-Nov-2026","weekDay":"Tuesday","description":"Diwali-Balipratipada","morning_session":null,"evening_session":null,"Sr_no":18},
-          {"tradingDate":"bad date","weekDay":"","description":"skipped"}],"IRD":[]}"#;
-        let list = parse_holidays(body).unwrap();
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[1].description, "Diwali-Balipratipada");
-        assert_eq!(list[1].morning_session, None);
-        let d = |m, day| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
-        assert!(is_trading_holiday(&list, d(11, 10)));
-        assert!(!is_trading_holiday(&list, d(11, 11)));
-        assert!(parse_holidays(r#"{"CD":[]}"#).is_err());
     }
 }

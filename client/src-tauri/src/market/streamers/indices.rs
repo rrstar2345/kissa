@@ -35,15 +35,9 @@ struct IndexStreamMessage {
     change: f64,
     #[serde(rename = "previousClose")]
     previous_close: f64,
-    #[serde(rename = "dessiminationTime")]
-    #[allow(dead_code)]
-    dissemination_time: String,
     open: f64,
     low: f64,
     high: f64,
-    #[serde(rename = "indStatus")]
-    #[allow(dead_code)]
-    ind_status: String,
     #[serde(rename = "mktStatus")]
     mkt_status: String,
 }

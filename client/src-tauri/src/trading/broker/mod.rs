@@ -37,11 +37,6 @@ impl BrokerError {
     pub fn rejected(message: impl Into<String>) -> Self {
         Self { message: message.into(), unknown: false }
     }
-
-    #[allow(dead_code)]
-    pub fn unknown(message: impl Into<String>) -> Self {
-        Self { message: message.into(), unknown: true }
-    }
 }
 
 impl std::fmt::Display for BrokerError {

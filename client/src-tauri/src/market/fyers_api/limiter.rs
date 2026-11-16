@@ -69,9 +69,6 @@ pub enum Priority {
 #[derive(Debug, Clone)]
 pub struct Throttled {
     pub message: String,
-    /// Seconds until a call may succeed, when known.
-    #[allow(dead_code)]
-    pub retry_in: Option<u64>,
 }
 
 impl fmt::Display for Throttled {
@@ -424,13 +421,10 @@ impl FyersLimiter {
             };
             match verdict {
                 Verdict::Go => return Ok(()),
-                Verdict::Blocked { message, retry_in } => return Err(Throttled { message, retry_in }),
+                Verdict::Blocked { message, .. } => return Err(Throttled { message }),
                 Verdict::Wait(d) => {
                     if began.elapsed() + d > max_wait {
-                        return Err(Throttled {
-                            message: "Fyers call skipped: the rate budget is busy".into(),
-                            retry_in: Some(d.as_secs() + 1),
-                        });
+                        return Err(Throttled { message: "Fyers call skipped: the rate budget is busy".into() });
                     }
                     tokio::time::sleep(d + Duration::from_millis(5)).await;
                 }

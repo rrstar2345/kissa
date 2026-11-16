@@ -48,7 +48,6 @@ pub struct SystemConfig {
     pub option_info: ApiEndpoint,
     pub current_time: ApiEndpoint,
     pub market_status: ApiEndpoint,
-    pub holidays: ApiEndpoint,
 }
 
 impl Default for SystemConfig {
@@ -77,10 +76,6 @@ impl Default for SystemConfig {
             market_status: ep(
                 "https://www.nseindia.com/api/marketStatus",
                 "NSE market open/closed state (Capital Market row; F&O follows it)",
-            ),
-            holidays: ep(
-                "https://www.nseindia.com/api/holiday-master?type=trading",
-                "NSE trading holidays (FO array); not used yet",
             ),
         }
     }
@@ -704,7 +699,7 @@ mod tests {
         let mut new = AppConfig::default();
         assert!(restart_pending(&running, &new).is_empty());
         new.fyers.poll_secs += 1;
-        new.system.holidays.base = "https://example.com".into();
+        new.system.market_status.base = "https://example.com".into();
         new.market_runtime.reconnect_delay_seconds += 1;
         assert_eq!(restart_pending(&running, &new), vec!["system", "market_runtime", "fyers"]);
         new = AppConfig::default();

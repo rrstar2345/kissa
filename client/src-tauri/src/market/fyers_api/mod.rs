@@ -211,10 +211,7 @@ pub async fn send_with(
     // A token Fyers already refused is not tried again by background calls; a
     // user action (or a new login) that succeeds lifts this.
     if judge_auth && prio == Priority::Background && crate::accounts::fyers_rejected() {
-        return Err(ApiError::Throttled(Throttled {
-            message: "Fyers login was rejected; log in again".into(),
-            retry_in: None,
-        }));
+        return Err(ApiError::Throttled(Throttled { message: "Fyers login was rejected; log in again".into() }));
     }
     if let Some(a) = api {
         a.limiter.acquire(cat, prio).await.map_err(ApiError::Throttled)?;
