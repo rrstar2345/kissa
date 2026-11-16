@@ -712,6 +712,36 @@ export interface AlertRow {
   attempts: number;
 }
 
+// ----------------------------------------------------------------- audit ---
+
+export type AuditCategory = 'order' | 'risk' | 'algo' | 'copier' | 'account' | 'settings' | 'system';
+
+export interface AuditRow {
+  id: number;
+  /** RFC 3339 UTC. */
+  at: string;
+  category: AuditCategory;
+  action: string;
+  actor: 'user' | 'system' | 'algo' | 'copier' | 'broker';
+  accountId: string | null;
+  accountName: string | null;
+  /** An order id, algo id or setting key. */
+  subject: string;
+  summary: string;
+  /** JSON text, when the entry has details. */
+  detail: string | null;
+}
+
+export interface AuditFilter {
+  /** Empty = every category. */
+  categories: string[];
+  accountId: string | null;
+  /** IST dates, inclusive. */
+  from: string | null;
+  to: string | null;
+  search: string | null;
+}
+
 // ----------------------------------------------------------------- algos ---
 
 export type ExpirySel = 'current' | 'next' | 'next1' | 'next2' | 'next3';

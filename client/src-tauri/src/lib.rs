@@ -1,6 +1,7 @@
 mod accounts;
 mod alerts;
 mod algo;
+mod audit;
 mod backtest;
 mod chain;
 mod charts;
@@ -42,6 +43,13 @@ pub fn run() {
             info!("App root: {}", paths.root.display());
 
             let pool = tauri::async_runtime::block_on(db::init_pool(&paths.db_file))?;
+            // Audit journal: `audit::record(..)` works from anywhere once started.
+            audit::AuditService::start(pool.clone(), app.handle().clone());
+            audit::record(audit::Entry::new(
+                audit::Category::System,
+                "app_start",
+                format!("Kissa started (v{})", env!("CARGO_PKG_VERSION")),
+            ));
             let (ltp, ltp_rx) = trading::ltp::LtpStore::new();
             let alerts = tauri::async_runtime::block_on(alerts::AlertService::new(pool.clone(), app.handle().clone()));
             // Every Fyers REST call goes through this limiter (see market/fyers_api).
@@ -265,6 +273,7 @@ pub fn run() {
             commands::test_alert,
             commands::list_alert_history,
             commands::clear_alert_history,
+            commands::list_audit,
             commands::get_quote,
             commands::contract_info,
             commands::refresh_instruments,

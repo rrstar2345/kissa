@@ -38,6 +38,7 @@ use super::{
 use super::store;
 use crate::accounts;
 use crate::alerts::{Alert, Kind};
+use crate::audit::{self, Actor};
 use crate::charts::instrument::{index_key, option_key};
 use crate::charts::resample::{self, Interval};
 use crate::charts::rules::eval::{self, Decision};
@@ -285,6 +286,16 @@ impl Runner {
                 st.armed = false;
                 self.log(algo, "warn", "disarmed", &format!("Disarmed automatically: {reason}. Arm it again when trading may resume."))
                     .await;
+                audit::record(
+                    audit::Entry::new(
+                        audit::Category::Algo,
+                        "disarmed",
+                        format!("Algo disarmed automatically: {} · {reason}", algo.name),
+                    )
+                    .actor(Actor::Algo)
+                    .subject(algo.id.clone())
+                    .detail(serde_json::json!({ "reason": reason, "automatic": true })),
+                );
                 self.notify(
                     format!("{}:disarm:{}", algo.id, today_ist()),
                     format!("Algo disarmed: {}", algo.name),
@@ -712,7 +723,7 @@ impl Runner {
         for leg in legs {
             let Ok(Some(o)) = trade_store::get_order(&self.state.db, &leg.order_id).await else { continue };
             if is_open_status(&o.status) && o.filled_qty == 0 {
-                match self.state.trading.cancel(&o.id).await {
+                match audit::scope(Actor::Algo, self.state.trading.cancel(&o.id)).await {
                     Ok(_) => self.log(algo, "info", "info", &format!("Cancelled the unfilled entry order for {} at the next bar.", leg_label(leg))).await,
                     Err(e) => self.log(algo, "warn", "error", &format!("Could not cancel the unfilled entry order for {}: {e}", leg_label(leg))).await,
                 }
@@ -741,7 +752,7 @@ impl Runner {
     async fn close_leg(&self, algo: &Algo, leg: &Leg, reason: &str) -> bool {
         if let Ok(Some(o)) = trade_store::get_order(&self.state.db, &leg.order_id).await {
             if is_open_status(&o.status) && o.filled_qty == 0 {
-                let _ = self.state.trading.cancel(&o.id).await;
+                let _ = audit::scope(Actor::Algo, self.state.trading.cancel(&o.id)).await;
             }
         }
         let name = self.acct_name(&leg.account_id).await;

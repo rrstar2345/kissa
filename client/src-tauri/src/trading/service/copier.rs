@@ -26,6 +26,7 @@ use tokio::sync::OwnedMutexGuard;
 use tracing::warn;
 
 use super::TradingService;
+use crate::audit::{self, Actor, Category, Entry};
 use crate::accounts;
 use crate::alerts::{Alert, Kind};
 use crate::charts::instrument::option_key;
@@ -99,6 +100,21 @@ impl TradingService {
         }
         copier::save_config(&self.pool, &cfg).await?;
         self.emit_copier();
+        audit::record(
+            Entry::new(
+                Category::Copier,
+                "config_saved",
+                format!(
+                    "Trade copier {}: master {} · {} child account(s)",
+                    if cfg.enabled { "on" } else { "off" },
+                    if cfg.master_account_id.is_empty() { "(none)".to_string() } else { self.account_name(&cfg.master_account_id).await },
+                    cfg.children.len()
+                ),
+            )
+            .actor(Actor::User)
+            .account(cfg.master_account_id.clone())
+            .detail(serde_json::to_value(&cfg).unwrap_or_default()),
+        );
         Ok(cfg)
     }
 
@@ -239,7 +255,7 @@ impl TradingService {
             if let Ok(open) = store::open_orders(&self.pool, None).await {
                 for o in open {
                     if o.account_id == child.account_id && o.instrument == master.instrument && o.product == master.product {
-                        if let Err(e) = self.cancel(&o.id).await {
+                        if let Err(e) = audit::scope(Actor::Copier, self.cancel(&o.id)).await {
                             link.message = format!("Could not cancel the child's open {} order first: {e}", o.side);
                             self.record(job, &link).await;
                             self.alert_copy_failed(master, &child.account_id, &link).await;
@@ -250,7 +266,7 @@ impl TradingService {
             }
         }
 
-        match self.place_inner(input).await {
+        match audit::scope(Actor::Copier, self.place_inner(input)).await {
             Ok(o) => {
                 link.child_order_id = Some(o.id.clone());
                 if o.status == "REJECTED" {
@@ -274,6 +290,20 @@ impl TradingService {
     async fn alert_copy_failed(&self, master: &OrderRow, child_account_id: &str, link: &LinkRow) {
         let name = self.account_name(child_account_id).await;
         let master_name = self.account_name(&master.account_id).await;
+        audit::record(
+            Entry::new(
+                Category::Copier,
+                "copy_failed",
+                format!("Copy failed: {} → {name} · {}", label(master), link.message),
+            )
+            .actor(Actor::Copier)
+            .account(child_account_id)
+            .subject(master.id.clone())
+            .detail(serde_json::json!({
+                "masterOrderId": master.id, "masterAccount": master_name, "masterLots": link.master_lots,
+                "childLots": link.child_lots, "message": link.message,
+            })),
+        );
         self.alerts.notify(Alert::new(
             Kind::Copier,
             link.id.clone(),
@@ -326,7 +356,7 @@ impl TradingService {
                 continue;
             }
             let (action, result): (&str, Result<String>) = if ended {
-                ("cancel", self.cancel(&child_id).await.map(|_| format!("Cancelled with the master order ({})", master.status)))
+                ("cancel", audit::scope(Actor::Copier, self.cancel(&child_id)).await.map(|_| format!("Cancelled with the master order ({})", master.status)))
             } else if working
                 && child.filled_qty == 0
                 && ((child.price - master.price).abs() > 1e-9 || (child.trigger_price - master.trigger_price).abs() > 1e-9)
@@ -334,7 +364,7 @@ impl TradingService {
                 let trigger = (master.order_type == "STOP_LOSS").then_some(master.trigger_price);
                 (
                     "modify",
-                    self.modify(&child_id, master.price, trigger)
+                    audit::scope(Actor::Copier, self.modify(&child_id, master.price, trigger))
                         .await
                         .map(|_| format!("Price follows the master: {:.2}", master.price)),
                 )
@@ -350,6 +380,16 @@ impl TradingService {
                     let msg = format!("Could not {action} the child order: {e}");
                     let _ = copier::set_link_message(&self.pool, &l.id, &msg).await;
                     let name = self.account_name(&l.child_account_id).await;
+                    audit::record(
+                        Entry::new(
+                            Category::Copier,
+                            "out_of_step",
+                            format!("Copy out of step: {} → {name} · {msg}", label(master)),
+                        )
+                        .actor(Actor::Copier)
+                        .account(l.child_account_id.clone())
+                        .subject(master.id.clone()),
+                    );
                     self.alerts.notify(Alert::new(
                         Kind::Copier,
                         format!("{}:{action}", l.id),

@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 
 use super::TradingService;
+use crate::audit::{self, Actor};
 use crate::trading::{OrderRow, PlaceOrderInput};
 
 impl TradingService {
@@ -24,9 +25,9 @@ impl TradingService {
     /// Place an algo order. `propagate`: let the trade copier replicate it.
     pub async fn place_algo(&self, input: PlaceOrderInput, propagate: bool) -> Result<OrderRow> {
         if propagate {
-            self.place(input).await
+            audit::scope(Actor::Algo, self.place(input)).await
         } else {
-            self.place_inner(input).await
+            audit::scope(Actor::Algo, self.place_inner(input)).await
         }
     }
 
@@ -39,6 +40,6 @@ impl TradingService {
             .into_iter()
             .find(|p| p.instrument == instrument && p.product == product)
             .ok_or_else(|| anyhow!("there is no open position"))?;
-        Ok(self.exit_one_with(&p, propagate).await?.0)
+        Ok(audit::scope(Actor::Algo, self.exit_one_with(&p, propagate)).await?.0)
     }
 }

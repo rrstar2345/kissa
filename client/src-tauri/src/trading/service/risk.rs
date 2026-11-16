@@ -13,12 +13,14 @@
 //! right now (kill switch or daily-loss halt). Disarm on `Some`.
 
 use anyhow::{anyhow, Result};
+use serde_json::json;
 use chrono::Timelike;
 use std::collections::HashSet;
 use tauri::Emitter;
 use tracing::{info, warn};
 
 use super::TradingService;
+use crate::audit::{self, Category, Entry};
 use crate::accounts::{self, Account};
 use crate::market::market_clock;
 use crate::trading::risk::{
@@ -195,6 +197,16 @@ impl TradingService {
             }
         }
         info!("Risk: {} halted; {cancelled} entry order(s) cancelled, {exited} exit order(s) placed", a.name);
+        audit::record(
+            Entry::new(
+                Category::Risk,
+                "halt",
+                format!("Daily-loss halt: {} · {reason}. {cancelled} entry order(s) cancelled, {exited} exit order(s) placed", a.name),
+            )
+            .account(a.id.clone())
+            .subject("daily_loss")
+            .detail(json!({ "reason": reason, "cancelled": cancelled, "exited": exited, "squareOff": limits.square_off_on_breach })),
+        );
         self.alert_risk(
             format!("Risk halt: {}", a.name),
             format!(
@@ -277,9 +289,18 @@ impl TradingService {
 
     pub async fn save_risk_limits(&self, account_id: &str, limits: RiskLimits) -> Result<RiskLimits> {
         limits.validate().map_err(|e| anyhow!("{e}"))?;
-        accounts::get(&self.pool, account_id).await?;
+        let acct = accounts::get(&self.pool, account_id).await?;
         risk::save_limits(&self.pool, account_id, &limits).await?;
         self.emit_risk();
+        audit::record(
+            Entry::new(
+                Category::Risk,
+                "limits_saved",
+                format!("Risk limits saved: {} ({})", acct.name, if limits.enabled { "on" } else { "off" }),
+            )
+            .account(account_id)
+            .detail(serde_json::to_value(&limits).unwrap_or_default()),
+        );
         Ok(limits)
     }
 
@@ -294,6 +315,7 @@ impl TradingService {
             info!("Risk: kill switch released");
             self.emit_risk();
             self.alert_risk("Kill switch released".into(), "Trading is allowed again.".into());
+            audit::record(Entry::new(Category::Risk, "kill_switch_off", "Kill switch released: trading is allowed again").subject("kill_switch"));
             return Ok(out);
         }
         let row = HaltRow {
@@ -315,6 +337,19 @@ impl TradingService {
             out.cancelled += r.cancelled;
             out.skipped = r.skipped;
         }
+        audit::record(
+            Entry::new(
+                Category::Risk,
+                "kill_switch_on",
+                format!(
+                    "Kill switch ON: {} order(s) cancelled{}",
+                    out.cancelled,
+                    if flatten { format!(", {} exit order(s) placed, {} skipped", out.placed, out.skipped.len()) } else { String::new() }
+                ),
+            )
+            .subject("kill_switch")
+            .detail(json!({ "flatten": flatten, "cancelled": out.cancelled, "placed": out.placed, "skipped": out.skipped })),
+        );
         self.alert_risk(
             "Kill switch ON".into(),
             format!(
@@ -335,6 +370,11 @@ impl TradingService {
                 risk::set_halt(&self.pool, &h).await?;
                 info!("Risk: halt of account {account_id} lifted for today");
                 self.emit_risk();
+                audit::record(
+                    Entry::new(Category::Risk, "resumed", format!("Daily-loss halt lifted for today: {}", self.account_name(account_id).await))
+                        .account(account_id)
+                        .subject("daily_loss"),
+                );
             }
         }
         Ok(())

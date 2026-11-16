@@ -6,8 +6,10 @@
 //! `place`, so the server gate, funds and broker rules apply as usual.
 
 use anyhow::{anyhow, Result};
+use serde_json::json;
 
 use super::TradingService;
+use crate::audit::{self, Category, Entry};
 use crate::trading::pricing::exit_price;
 use crate::trading::{store, today_ist, ExitAllResult, OrderRow, PlaceOrderInput, Position};
 
@@ -103,6 +105,23 @@ impl TradingService {
                 }
                 Err(e) => out.skipped.push(format!("{} ({}): {e}", contract_label(p), p.account_name)),
             }
+        }
+        if out.placed > 0 || !out.skipped.is_empty() || out.cancelled > 0 {
+            audit::record(
+                Entry::new(
+                    Category::Order,
+                    "exit_all",
+                    format!(
+                        "Exit all{}: {} exit order(s) placed, {} open order(s) cancelled, {} skipped",
+                        if account.is_some() { " (one account)" } else { "" },
+                        out.placed,
+                        out.cancelled,
+                        out.skipped.len()
+                    ),
+                )
+                .account(account.unwrap_or(""))
+                .detail(json!({ "placed": out.placed, "cancelled": out.cancelled, "skipped": out.skipped })),
+            );
         }
         Ok(out)
     }

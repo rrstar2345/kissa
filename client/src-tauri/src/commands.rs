@@ -3,6 +3,8 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::alerts::{config::AlertConfig, store::AlertRow, AlertSettings};
+use crate::audit::store::{self as audit_store, AuditFilter, AuditRow};
+use crate::audit::{self, events as audit_events, Actor, Category as AuditCategory, Entry};
 use crate::accounts::{self, Account, SaveAccountInput, TestResult};
 use crate::chain::runner;
 use crate::charts::rules::{self, eval as rule_eval, Ruleset};
@@ -353,7 +355,22 @@ pub async fn get_setting(key: String, state: State<'_, SharedState>) -> Res<Opti
 
 #[tauri::command]
 pub async fn set_setting(key: String, value: String, state: State<'_, SharedState>) -> Res<()> {
+    let journaled = audit_events::is_journaled_setting(&key);
+    let old = if journaled { db::get_setting(&state.db, &key).await.ok().flatten() } else { None };
     db::set_setting(&state.db, &key, &value).await.map_err(err)?;
+    if journaled && old.as_deref() != Some(value.as_str()) {
+        let (from, to) = if key == "data.fyers_account" {
+            (account_label(&state.db, old.as_deref()).await, account_label(&state.db, Some(&value)).await)
+        } else {
+            (old.clone().unwrap_or_else(|| "(default)".into()), value.clone())
+        };
+        audit::record(
+            Entry::new(AuditCategory::Settings, "changed", format!("Setting {key}: {from} → {to}"))
+                .actor(Actor::User)
+                .subject(key.clone())
+                .detail(serde_json::json!({ "key": key, "old": old, "new": value })),
+        );
+    }
     if key == "data.source" {
         // Move the exchange status and the streams over to the new source now.
         state.market_status.set_source(DataSource::from_setting(Some(&value)));
@@ -368,6 +385,23 @@ pub async fn set_setting(key: String, value: String, state: State<'_, SharedStat
 
 // -------------------------------------------------------------- accounts ---
 
+/// An account's name for the journal; the id itself when it no longer exists.
+async fn account_label(pool: &sqlx::SqlitePool, id: Option<&str>) -> String {
+    match id.map(str::trim).filter(|i| !i.is_empty()) {
+        None => "(none)".to_string(),
+        Some(id) => accounts::get(pool, id).await.map(|a| a.name).unwrap_or_else(|_| id.to_string()),
+    }
+}
+
+/// Fyers login outcome for the journal (never the auth code or token).
+fn audit_login(account_id: &str, name: &str, how: &str, result: &Result<(), String>) {
+    let (action, summary) = match result {
+        Ok(()) => ("login", format!("Fyers login succeeded: {name} ({how})")),
+        Err(e) => ("login_failed", format!("Fyers login failed: {name} ({how}) · {e}")),
+    };
+    audit::record(Entry::new(AuditCategory::Account, action, summary).actor(Actor::User).account(account_id).subject(account_id));
+}
+
 #[tauri::command]
 pub async fn list_accounts(state: State<'_, SharedState>) -> Res<Vec<Account>> {
     accounts::list(&state.db).await.map_err(err)
@@ -375,22 +409,56 @@ pub async fn list_accounts(state: State<'_, SharedState>) -> Res<Vec<Account>> {
 
 #[tauri::command]
 pub async fn save_account(input: SaveAccountInput, state: State<'_, SharedState>) -> Res<Account> {
-    accounts::save(&state.db, input).await.map_err(err)
+    let is_new = input.id.as_deref().map(str::trim).unwrap_or("").is_empty();
+    // Which secrets were entered (names only, never values).
+    let mut secrets_changed: Vec<String> =
+        input.secrets.iter().filter(|(_, v)| !v.trim().is_empty()).map(|(k, _)| k.clone()).collect();
+    secrets_changed.sort();
+    let acct = accounts::save(&state.db, input).await.map_err(err)?;
+    audit::record(
+        Entry::new(
+            AuditCategory::Account,
+            if is_new { "created" } else { "saved" },
+            format!("Account {}: {} ({})", if is_new { "created" } else { "saved" }, acct.name, acct.kind),
+        )
+        .actor(Actor::User)
+        .account(acct.id.clone())
+        .subject(acct.id.clone())
+        .detail(serde_json::json!({ "kind": acct.kind, "fieldsEntered": secrets_changed })),
+    );
+    Ok(acct)
 }
 
 #[tauri::command]
 pub async fn delete_account(id: String, state: State<'_, SharedState>) -> Res<()> {
+    let name = account_label(&state.db, Some(&id)).await;
     accounts::delete(&state.db, &id).await.map_err(err)?;
     state.trading.forget_account(&id).await;
+    // No `.account(..)`: the account is gone, so the name is kept in the summary.
+    audit::record(
+        Entry::new(AuditCategory::Account, "deleted", format!("Account deleted: {name}")).actor(Actor::User).subject(id),
+    );
     Ok(())
 }
 
 #[tauri::command]
 pub async fn test_account(id: String, state: State<'_, SharedState>) -> Res<TestResult> {
-    Ok(match accounts::test(&state.db, &state.config, &id).await {
+    let result = match accounts::test(&state.db, &state.config, &id).await {
         Ok(r) => r,
         Err(e) => TestResult { ok: false, message: e.to_string() },
-    })
+    };
+    let name = account_label(&state.db, Some(&id)).await;
+    audit::record(
+        Entry::new(
+            AuditCategory::Account,
+            if result.ok { "test_ok" } else { "test_failed" },
+            format!("Account test {}: {name} · {}", if result.ok { "passed" } else { "failed" }, result.message),
+        )
+        .actor(Actor::User)
+        .account(id.clone())
+        .subject(id),
+    );
+    Ok(result)
 }
 
 /// Fyers login step 1: the URL to open in the browser.
@@ -404,13 +472,15 @@ pub async fn fyers_login_url(id: String, state: State<'_, SharedState>) -> Res<S
 #[tauri::command]
 pub async fn fyers_login_local(id: String, app: tauri::AppHandle, state: State<'_, SharedState>) -> Res<()> {
     use tauri_plugin_opener::OpenerExt;
-    accounts::fyers_login_local(&state.db, &state.config, &id, |url| {
+    let result = accounts::fyers_login_local(&state.db, &state.config, &id, |url| {
         app.opener()
             .open_url(url, None::<&str>)
             .map_err(|e| anyhow::anyhow!("Could not open the browser: {e}"))
     })
     .await
-    .map_err(err)
+    .map_err(err);
+    audit_login(&id, &account_label(&state.db, Some(&id)).await, "browser", &result);
+    result
 }
 
 #[tauri::command]
@@ -437,7 +507,9 @@ pub async fn fyers_login_finished(id: String, state: State<'_, SharedState>) -> 
 /// Fyers login step 2: exchange the pasted redirect URL / auth code for an access token.
 #[tauri::command]
 pub async fn fyers_login(id: String, pasted: String, state: State<'_, SharedState>) -> Res<()> {
-    accounts::fyers_login(&state.db, &state.config, &id, &pasted).await.map_err(err)
+    let result = accounts::fyers_login(&state.db, &state.config, &id, &pasted).await.map_err(err);
+    audit_login(&id, &account_label(&state.db, Some(&id)).await, "pasted code", &result);
+    result
 }
 
 // ---------------------------------------------------------------- charts ---
@@ -533,12 +605,12 @@ use crate::trading::{ContractInfo, Dashboard, ExitAllResult, OrderRow, PlaceOrde
 
 #[tauri::command]
 pub async fn place_order(input: PlaceOrderInput, state: State<'_, SharedState>) -> Res<OrderRow> {
-    state.trading.place(input).await.map_err(err)
+    audit::scope(Actor::User, state.trading.place(input)).await.map_err(err)
 }
 
 #[tauri::command]
 pub async fn cancel_order(id: String, state: State<'_, SharedState>) -> Res<OrderRow> {
-    state.trading.cancel(&id).await.map_err(err)
+    audit::scope(Actor::User, state.trading.cancel(&id)).await.map_err(err)
 }
 
 #[tauri::command]
@@ -548,7 +620,7 @@ pub async fn modify_order(
     trigger_price: Option<f64>,
     state: State<'_, SharedState>,
 ) -> Res<OrderRow> {
-    state.trading.modify(&id, price, trigger_price).await.map_err(err)
+    audit::scope(Actor::User, state.trading.modify(&id, price, trigger_price)).await.map_err(err)
 }
 
 #[tauri::command]
@@ -610,13 +682,13 @@ pub async fn exit_position(
     product: String,
     state: State<'_, SharedState>,
 ) -> Res<OrderRow> {
-    state.trading.exit_position(&account_id, &instrument, &product).await.map_err(err)
+    audit::scope(Actor::User, state.trading.exit_position(&account_id, &instrument, &product)).await.map_err(err)
 }
 
 /// Exit every open position, of one account or all accounts.
 #[tauri::command]
 pub async fn exit_all(account_id: Option<String>, state: State<'_, SharedState>) -> Res<ExitAllResult> {
-    state.trading.exit_all(account_id.as_deref()).await.map_err(err)
+    audit::scope(Actor::User, state.trading.exit_all(account_id.as_deref())).await.map_err(err)
 }
 
 // ---------------------------------------------------------------- risk ---
@@ -635,19 +707,19 @@ pub async fn save_risk_limits(
     limits: RiskLimits,
     state: State<'_, SharedState>,
 ) -> Res<RiskLimits> {
-    state.trading.save_risk_limits(&account_id, limits).await.map_err(err)
+    audit::scope(Actor::User, state.trading.save_risk_limits(&account_id, limits)).await.map_err(err)
 }
 
 /// Kill switch on (optionally flattening every position) or off.
 #[tauri::command]
 pub async fn set_kill_switch(on: bool, flatten: bool, state: State<'_, SharedState>) -> Res<KillResult> {
-    state.trading.set_kill_switch(on, flatten).await.map_err(err)
+    audit::scope(Actor::User, state.trading.set_kill_switch(on, flatten)).await.map_err(err)
 }
 
 /// Lift today's daily-loss halt of an account.
 #[tauri::command]
 pub async fn resume_account(account_id: String, state: State<'_, SharedState>) -> Res<()> {
-    state.trading.resume_account(&account_id).await.map_err(err)
+    audit::scope(Actor::User, state.trading.resume_account(&account_id)).await.map_err(err)
 }
 
 // ----------------------------------------------------------------- algos ---
@@ -763,6 +835,20 @@ pub async fn clear_alert_history(state: State<'_, SharedState>) -> Res<()> {
     state.alerts.clear_history().await.map_err(err)
 }
 
+// ----------------------------------------------------------------- audit ---
+
+/// Journal entries, newest first. Pass the `id` of the last row as
+/// `before_id` to load the next page.
+#[tauri::command]
+pub async fn list_audit(
+    filter: Option<AuditFilter>,
+    before_id: Option<i64>,
+    limit: Option<i64>,
+    state: State<'_, SharedState>,
+) -> Res<Vec<AuditRow>> {
+    audit_store::list(&state.db, &filter.unwrap_or_default(), before_id, limit.unwrap_or(100)).await.map_err(err)
+}
+
 /// Latest price of a contract, for the order ticket.
 #[tauri::command]
 pub fn get_quote(
@@ -778,7 +864,22 @@ pub fn get_quote(
 /// Open the broker session and live order updates for an account.
 #[tauri::command]
 pub async fn connect_broker(account_id: String, state: State<'_, SharedState>) -> Res<()> {
-    state.trading.connect_broker(&account_id).await.map_err(err)
+    let result = state.trading.connect_broker(&account_id).await.map_err(err);
+    let name = account_label(&state.db, Some(&account_id)).await;
+    audit::record(
+        Entry::new(
+            AuditCategory::Account,
+            if result.is_ok() { "broker_connected" } else { "broker_connect_failed" },
+            match &result {
+                Ok(()) => format!("Broker connected: {name}"),
+                Err(e) => format!("Broker connect failed: {name} · {e}"),
+            },
+        )
+        .actor(Actor::User)
+        .account(account_id.clone())
+        .subject(account_id),
+    );
+    result
 }
 
 /// Re-read the broker's order book now.
@@ -814,8 +915,20 @@ pub fn get_settings_json(state: State<'_, SharedState>) -> Res<String> {
 /// immediately; everything else is read at startup, so restart the app.
 #[tauri::command]
 pub async fn save_settings_json(json: String, state: State<'_, SharedState>) -> Res<()> {
+    let old: Option<serde_json::Value> =
+        settings::read_settings_json(&state.paths).ok().and_then(|t| serde_json::from_str(&t).ok());
     let cfg = settings::write_settings_json(&state.paths, &json)?;
     state.trading.set_server(cfg.server).await;
+    let new: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+    let changed = audit_events::changed_sections(&old.unwrap_or_default(), &new);
+    if !changed.is_empty() {
+        audit::record(
+            Entry::new(AuditCategory::Settings, "settings_file_saved", format!("settings.json saved: changed {}", changed.join(", ")))
+                .actor(Actor::User)
+                .subject("settings.json")
+                .detail(serde_json::json!({ "changedSections": changed })),
+        );
+    }
     Ok(())
 }
 
@@ -848,6 +961,16 @@ pub async fn save_server_settings(
         crate::secrets::set(server_auth::KEY_ACCOUNT, server_auth::KEY_FIELD, k).map_err(err)?;
     }
     state.trading.set_server(server.clone()).await;
+    audit::record(
+        Entry::new(
+            AuditCategory::Settings,
+            "server_saved",
+            format!("Server connection saved: {}{}", server.url, if server.port > 0 { format!(":{}", server.port) } else { String::new() }),
+        )
+        .actor(Actor::User)
+        .subject("server")
+        .detail(serde_json::json!({ "url": server.url, "port": server.port, "keyUpdated": api_key.as_deref().map(|k| !k.trim().is_empty()).unwrap_or(false) })),
+    );
     Ok(server_settings(&server))
 }
 

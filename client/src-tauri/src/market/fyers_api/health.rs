@@ -154,6 +154,17 @@ impl ApiHealth {
         };
         // Only the moment an endpoint turns bad raises an alert (the alert
         // service also de-duplicates per endpoint).
+        if let Some((msg, _)) = &issue {
+            crate::audit::record(
+                crate::audit::Entry::new(
+                    crate::audit::Category::System,
+                    "api_failing",
+                    format!("{} API {}: {endpoint} · {msg}", source.label(), kind.label()),
+                )
+                .actor(crate::audit::Actor::System)
+                .subject(format!("{}:{endpoint}", source.label())),
+            );
+        }
         if let (Some((msg, _)), Some(alerts)) = (issue, &self.alerts) {
             let mut body = format!("{} {endpoint}: {msg}", source.label());
             if let Some(r) = retry_after {

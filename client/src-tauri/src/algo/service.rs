@@ -3,9 +3,11 @@
 //! `runner`.
 
 use anyhow::{anyhow, Result};
+use serde_json::json;
 use sqlx::SqlitePool;
 
 use super::{store, Algo, AlgoState, AlgoView};
+use crate::audit::{self, Actor, Category, Entry};
 use crate::accounts;
 use crate::charts::rules;
 use crate::state::SharedState;
@@ -70,7 +72,22 @@ pub async fn view(pool: &SqlitePool, id: &str) -> Result<AlgoView> {
 pub async fn save(pool: &SqlitePool, mut algo: Algo) -> Result<Algo> {
     algo.normalize();
     validate_full(pool, &algo).await?;
-    store::save_algo(pool, algo).await
+    let is_new = algo.id.trim().is_empty();
+    let saved = store::save_algo(pool, algo).await?;
+    audit::record(
+        Entry::new(
+            Category::Algo,
+            if is_new { "created" } else { "saved" },
+            format!("Algo {}: {}", if is_new { "created" } else { "saved" }, saved.name),
+        )
+        .actor(Actor::User)
+        .subject(saved.id.clone())
+        .detail(json!({
+            "signalId": saved.signal_id, "interval": saved.interval, "accounts": saved.accounts,
+            "copier": saved.copier, "allowLive": saved.allow_live,
+        })),
+    );
+    Ok(saved)
 }
 
 pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
@@ -81,7 +98,12 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
     if st.in_position() {
         return Err(anyhow!("The algo has an open position. Close it first (the algo manages the exit), then delete it"));
     }
-    store::delete_algo(pool, id).await
+    let name = store::get_algo(pool, id).await?.map(|a| a.name).unwrap_or_else(|| id.to_string());
+    store::delete_algo(pool, id).await?;
+    audit::record(
+        Entry::new(Category::Algo, "deleted", format!("Algo deleted: {name}")).actor(Actor::User).subject(id),
+    );
+    Ok(())
 }
 
 /// Arm (after the safety checks) or disarm. Disarming stops new entries; an
@@ -114,5 +136,15 @@ pub async fn set_armed(state: &SharedState, id: &str, armed: bool) -> Result<()>
         ("info", "disarmed", "Disarmed. No new entries; an open position is still managed until it is closed.")
     };
     store::journal_add(pool, &algo.id, &algo.name, level, kind, msg).await;
+    audit::record(
+        Entry::new(
+            Category::Algo,
+            kind,
+            format!("Algo {kind}: {} · {} account(s){}", algo.name, algo.accounts.len(), if algo.allow_live { " · live allowed" } else { "" }),
+        )
+        .actor(Actor::User)
+        .subject(algo.id.clone())
+        .detail(json!({ "accounts": algo.accounts, "interval": algo.interval, "allowLive": algo.allow_live })),
+    );
     Ok(())
 }

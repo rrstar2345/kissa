@@ -5,6 +5,7 @@
 //! * `squareoff`: paper INTRADAY auto square-off.
 //! * `copier`: trade copier (replicate master orders, follow their cancel / modify).
 //! * `algo`: hooks for the algo runner (price watch, orders with / without the copier, exits).
+//! * `journal`: audit journal entries for orders (see `crate::audit`).
 //! * `alerts`: alert messages (fills, rejections, risk, daily summary, token expiry).
 //! * `risk`: risk checks in `place`, the daily-loss monitor and the kill switch.
 //! * `bracket`: stop-loss / target legs attached to an entry (paper), with OCO.
@@ -20,6 +21,7 @@ mod algo;
 mod bracket;
 mod copier;
 mod exit;
+mod journal;
 mod orders;
 mod risk;
 mod settle;
@@ -332,6 +334,7 @@ impl TradingService {
                 .await?;
             }
             self.alert_fill(&o, dq, dp, filled).await;
+            journal::fill(&o, dq, dp, filled);
             o.filled_qty = filled;
             o.avg_price = avg;
         }
@@ -349,6 +352,14 @@ impl TradingService {
         self.emit_order(&row);
         if !was_terminal && row.status == "REJECTED" {
             self.alert_rejected(&row).await;
+        }
+        if !was_terminal {
+            match row.status.as_str() {
+                "CANCELLED" => journal::status(&row, "cancelled"),
+                "REJECTED" => journal::status(&row, "rejected"),
+                "EXPIRED" => journal::status(&row, "expired"),
+                _ => {}
+            }
         }
         // Bracket follow-ups: place the legs after an entry fills, cancel the
         // other leg after one executes.

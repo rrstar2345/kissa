@@ -7,6 +7,7 @@ use std::time::Duration;
 use tracing::debug;
 
 use super::bracket::validate_bracket;
+use super::journal;
 use super::TradingService;
 use crate::accounts;
 use crate::charts::instrument::option_key;
@@ -157,6 +158,18 @@ impl TradingService {
     /// The order flow itself, without copying. The copier places child
     /// orders through this, so a copy is never copied again.
     pub(super) async fn place_inner(&self, input: PlaceOrderInput) -> Result<OrderRow> {
+        let copy = input.clone();
+        match self.place_flow(input).await {
+            Ok(order) => Ok(order),
+            Err(e) => {
+                // Refused before it became an order: validation, risk, funds, server gate…
+                journal::place_failed(&copy, &e.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    async fn place_flow(&self, input: PlaceOrderInput) -> Result<OrderRow> {
         let c = validate(&input)?;
         if input.expiry.as_str() < today_ist().as_str() {
             return Err(anyhow!("This contract has expired"));
@@ -237,6 +250,7 @@ impl TradingService {
 
         store::insert_order(&self.pool, &order).await?;
         self.emit_order(&order);
+        journal::placed(&order);
 
         match broker.place(&order, &contract).await {
             Ok(reply) => self.apply_reply(order, reply).await,
@@ -246,6 +260,7 @@ impl TradingService {
                 store::save_order_state(&self.pool, &order).await?;
                 order = store::get_order(&self.pool, &order.id).await?.unwrap_or(order);
                 self.emit_order(&order);
+                journal::status(&order, "unknown");
                 self.resolve_unknown_later(order.id.clone());
                 Ok(order)
             }
@@ -256,6 +271,7 @@ impl TradingService {
                 order = store::get_order(&self.pool, &order.id).await?.unwrap_or(order);
                 self.emit_order(&order);
                 self.alert_rejected(&order).await;
+                journal::status(&order, "rejected");
                 Ok(order)
             }
         }
@@ -288,7 +304,10 @@ impl TradingService {
             return Err(anyhow!("The order is already {}", o.status));
         }
         let broker = self.broker_for_kind(&o.account_kind)?;
-        let reply = broker.cancel(&o).await?;
+        let reply = broker.cancel(&o).await.map_err(|e| {
+            journal::cancel_failed(&o, &e.to_string());
+            e
+        })?;
         self.apply_reply(o, reply).await
     }
 
@@ -311,10 +330,16 @@ impl TradingService {
 
         let new_trigger = if o.order_type == "STOP_LOSS" { trigger } else { 0.0 };
         let broker = self.broker_for_kind(&o.account_kind)?;
-        let reply = broker.modify(&o, price, new_trigger).await?;
+        let reply = broker.modify(&o, price, new_trigger).await.map_err(|e| {
+            journal::modify_failed(&o, &e.to_string());
+            e
+        })?;
+        let (old_price, old_trigger) = (o.price, o.trigger_price);
         o.price = price;
         o.trigger_price = new_trigger;
-        self.apply_reply(o, reply).await
+        let row = self.apply_reply(o, reply).await?;
+        journal::modified(&row, old_price, old_trigger);
+        Ok(row)
     }
 }
 

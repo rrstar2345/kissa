@@ -273,6 +273,19 @@ impl AlertService {
             .map(|a| a.name)
             .unwrap_or_else(|_| account_id.to_string());
         let detail = detail.trim();
+        crate::audit::record(
+            crate::audit::Entry::new(
+                crate::audit::Category::System,
+                if lost { "connection_lost" } else { "connection_restored" },
+                if lost {
+                    format!("Connection lost: {name}{}", if detail.is_empty() { String::new() } else { format!(" · {detail}") })
+                } else {
+                    format!("Connection restored: {name}")
+                },
+            )
+            .actor(crate::audit::Actor::Broker)
+            .account(account_id),
+        );
         Some(if lost {
             Alert::new(
                 Kind::Connection,

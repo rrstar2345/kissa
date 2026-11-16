@@ -4,6 +4,8 @@ import type {
   AlertConfig,
   AlertRow,
   AlertSettings,
+  AuditFilter,
+  AuditRow,
   BackfillResult,
   BacktestReport,
   BacktestRequest,
@@ -119,6 +121,9 @@ export const api = {
   testAlert: (channel: 'telegram' | 'email') => invoke<TestResult>('test_alert', { channel }),
   listAlertHistory: (limit = 200) => invoke<AlertRow[]>('list_alert_history', { limit }),
   clearAlertHistory: () => invoke<void>('clear_alert_history'),
+  /** Audit journal, newest first; pass the last row's id as `beforeId` for the next page. */
+  listAudit: (filter: AuditFilter, beforeId: number | null = null, limit = 100) =>
+    invoke<AuditRow[]>('list_audit', { filter, beforeId, limit }),
   getQuote: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
     invoke<QuoteView>('get_quote', { symbol, expiry, strike, isCall }),
   getDashboard: (accountId?: string | null) =>

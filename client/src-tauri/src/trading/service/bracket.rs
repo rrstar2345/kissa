@@ -17,7 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use tracing::warn;
 
-use super::{is_terminal, TradingService};
+use super::{is_terminal, journal, TradingService};
 use crate::trading::broker::Contract;
 use crate::trading::pricing::{exit_price, on_tick};
 use crate::trading::{
@@ -182,6 +182,7 @@ impl TradingService {
         for l in &legs {
             store::insert_order(&self.pool, l).await?;
             self.emit_order(l);
+            journal::placed(l);
         }
         for l in &legs {
             // The other leg may already have executed and cancelled this one.
@@ -201,6 +202,7 @@ impl TradingService {
                     if let Some(row) = store::get_order(&self.pool, &l.id).await? {
                         self.emit_order(&row);
                     }
+                    journal::status(&rejected, "rejected");
                 }
             }
         }

@@ -15,6 +15,8 @@ class TradingStore {
   copierVersion = $state(0);
   /** Bumped on every `algo-update` (armed, disarmed, entered, exited, journal entry). */
   algoVersion = $state(0);
+  /** Bumped on every `audit-update` (new journal entries). */
+  auditVersion = $state(0);
   private unlisten: UnlistenFn[] = [];
   private started = false;
 
@@ -40,6 +42,9 @@ class TradingStore {
       }),
       await listen('algo-update', () => {
         this.algoVersion++;
+      }),
+      await listen('audit-update', () => {
+        this.auditVersion++;
       })
     );
   }
