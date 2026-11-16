@@ -47,7 +47,7 @@ use super::store::{self, Fill};
 use super::{BrokerStatus, OrderRow};
 use crate::accounts;
 use crate::alerts::AlertService;
-use crate::settings::{AppConfig, ServerConfig};
+use crate::settings::{AppConfig, LiveConfig, ServerConfig};
 
 fn is_terminal(s: &str) -> bool {
     matches!(s, "TRADED" | "CANCELLED" | "REJECTED" | "EXPIRED")
@@ -62,7 +62,8 @@ fn norm_status(s: &str) -> String {
 
 pub struct TradingService {
     pool: SqlitePool,
-    cfg: AppConfig,
+    /// Settings that reload live (see `LiveConfig`); read through `cfg()`.
+    live: LiveConfig,
     ltp: Arc<LtpStore>,
     app: AppHandle,
     /// Serialises ledger writes: position maths reads, then writes.
@@ -88,16 +89,17 @@ pub struct TradingService {
 impl TradingService {
     pub fn new(
         pool: SqlitePool,
-        cfg: AppConfig,
+        live: LiveConfig,
         ltp: Arc<LtpStore>,
         app: AppHandle,
         alerts: Arc<AlertService>,
     ) -> (Arc<Self>, UnboundedReceiver<BrokerEvent>) {
         let (events_tx, events_rx) = unbounded_channel();
+        let cfg = live.get();
 
         // Register every broker here: account kind -> implementation.
-        let paper = PaperBroker::new(pool.clone(), &cfg.trading, ltp.clone(), events_tx.clone());
-        let dhan = DhanBroker::new(pool.clone(), &cfg.trading, events_tx.clone());
+        let paper = PaperBroker::new(pool.clone(), live.clone(), ltp.clone(), events_tx.clone());
+        let dhan = DhanBroker::new(pool.clone(), live.clone(), events_tx.clone());
         let mut brokers = Brokers::default();
         brokers.register(paper.clone());
         brokers.register(dhan);
@@ -106,7 +108,7 @@ impl TradingService {
         let server_auth = ServerAuth::new(cfg.trading.request_timeout_secs);
         let svc = Arc::new_cyclic(|me| Self {
             pool,
-            cfg,
+            live,
             ltp,
             app,
             ledger: Mutex::new(()),
@@ -121,6 +123,11 @@ impl TradingService {
             algo_watch: std::sync::RwLock::new(HashSet::new()),
         });
         (svc, events_rx)
+    }
+
+    /// The settings in force right now. Take it at the moment of use.
+    fn cfg(&self) -> Arc<AppConfig> {
+        self.live.get()
     }
 
     /// Start the background tasks: the paper matcher, broker event handling,
@@ -328,7 +335,7 @@ impl TradingService {
                 let _guard = self.ledger.lock().await;
                 store::record_fill(
                     &self.pool,
-                    &self.cfg.trading.charges,
+                    &self.cfg().trading.charges,
                     Fill { order: &o, qty: dq, price: dp, brokerage, ext_id: Some(format!("{}:{}", o.id, filled)) },
                 )
                 .await?;

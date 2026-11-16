@@ -19,6 +19,8 @@
   let savingJson = $state(false);
   let jsonMsg = $state<TestResult | null>(null);
   let loadError = $state('');
+  // Saved sections that are only read at startup (they apply after a restart)
+  let restartPending = $state<string[]>([]);
 
   const dirty = $derived(json !== original);
 
@@ -41,6 +43,7 @@
       port = s.port;
       keySet = s.apiKeySet;
       json = original = await api.getSettingsJson();
+      restartPending = await api.getRestartPending().catch(() => restartPending);
       loadError = '';
     } catch (e) {
       loadError = String(e);
@@ -86,7 +89,12 @@
     try {
       await api.saveSettingsJson(json);
       await load();
-      jsonMsg = { ok: true, message: 'Saved. Server changes apply now; restart the app for everything else.' };
+      jsonMsg = {
+        ok: true,
+        message: restartPending.length
+          ? 'Saved and applied. Some sections need an app restart (see below).'
+          : 'Saved and applied.'
+      };
     } catch (e) {
       jsonMsg = { ok: false, message: String(e) };
     } finally {
@@ -176,9 +184,14 @@
     <div>
       <h2 class="font-semibold">settings.json</h2>
       <p class="text-sm text-base-content/60">
-        Advanced options (data endpoints, charges, lot sizes, …). The server section applies immediately; other changes need an app restart.
+        Advanced options (data endpoints, charges, lot sizes, …). Server, trading (charges, paper broker, exit buffer, lot sizes, brokerage, instrument list) and risk_free_rate apply immediately; an open option chain picks up risk_free_rate when it is reopened. System, market_runtime, fyers, charts and trading.request_timeout_secs need an app restart.
       </p>
     </div>
+    {#if restartPending.length}
+      <div role="status" class="alert alert-warning alert-soft py-2 text-sm break-words">
+        Saved but not applied until you restart the app: {restartPending.join(', ')}.
+      </div>
+    {/if}
     <textarea class="textarea h-96 w-full font-mono text-xs" spellcheck="false" bind:value={json}></textarea>
     {#if jsonMsg}
       <div role="status" class="alert {jsonMsg.ok ? 'alert-success' : 'alert-error'} alert-soft py-2 text-sm break-words">{jsonMsg.message}</div>

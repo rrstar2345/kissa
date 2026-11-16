@@ -303,7 +303,7 @@ pub async fn start_chain(
         runner::spawn_fyers(
             app,
             label.clone(),
-            state.config.clone(),
+            (*state.live.get()).clone(),
             creds,
             state.market_status.clone(),
             state.recorder.clone(),
@@ -324,7 +324,7 @@ pub async fn start_chain(
         runner::spawn_nse(
             app,
             label.clone(),
-            state.config.clone(),
+            (*state.live.get()).clone(),
             state.stats.clone(),
             state.session.clone(),
             state.indices.clone(),
@@ -989,13 +989,16 @@ pub fn get_settings_json(state: State<'_, SharedState>) -> Res<String> {
     settings::read_settings_json(&state.paths)
 }
 
-/// Validate and save the whole settings file. The server section applies
-/// immediately; everything else is read at startup, so restart the app.
+/// Validate and save the whole settings file. The server, trading (except
+/// `request_timeout_secs`) and `risk_free_rate` settings apply immediately.
+/// Returns the sections that are only read at startup and now differ from what
+/// is running (restart the app for them).
 #[tauri::command]
-pub async fn save_settings_json(json: String, state: State<'_, SharedState>) -> Res<()> {
+pub async fn save_settings_json(json: String, state: State<'_, SharedState>) -> Res<Vec<String>> {
     let old: Option<serde_json::Value> =
         settings::read_settings_json(&state.paths).ok().and_then(|t| serde_json::from_str(&t).ok());
     let cfg = settings::write_settings_json(&state.paths, &json)?;
+    let restart = state.live.apply(&cfg);
     state.trading.set_server(cfg.server).await;
     let new: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
     let changed = audit_events::changed_sections(&old.unwrap_or_default(), &new);
@@ -1004,10 +1007,19 @@ pub async fn save_settings_json(json: String, state: State<'_, SharedState>) -> 
             Entry::new(AuditCategory::Settings, "settings_file_saved", format!("settings.json saved: changed {}", changed.join(", ")))
                 .actor(Actor::User)
                 .subject("settings.json")
-                .detail(serde_json::json!({ "changedSections": changed })),
+                .detail(serde_json::json!({ "changedSections": changed, "restartRequired": restart })),
         );
     }
-    Ok(())
+    Ok(restart.into_iter().map(String::from).collect())
+}
+
+/// Sections of `settings.json` that were saved but are only read at startup,
+/// so they do not apply until the app restarts.
+#[tauri::command]
+pub fn get_restart_pending(state: State<'_, SharedState>) -> Res<Vec<String>> {
+    let json = settings::read_settings_json(&state.paths)?;
+    let cfg: settings::AppConfig = serde_json::from_str(&json).map_err(err)?;
+    Ok(settings::restart_pending(&state.live.get(), &cfg).into_iter().map(String::from).collect())
 }
 
 #[tauri::command]
@@ -1035,6 +1047,7 @@ pub async fn save_server_settings(
     cfg.server = server.clone();
     let json = serde_json::to_string_pretty(&cfg).map_err(err)?;
     settings::write_settings_json(&state.paths, &json)?;
+    state.live.apply(&cfg);
     if let Some(k) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         crate::secrets::set(server_auth::KEY_ACCOUNT, server_auth::KEY_FIELD, k).map_err(err)?;
     }
@@ -1070,5 +1083,5 @@ pub async fn run_backtest(
     state: State<'_, SharedState>,
 ) -> Res<crate::backtest::Report> {
     state.recorder.flush_now().await;
-    crate::backtest::run(&state.db, &state.config, req).await.map_err(err)
+    crate::backtest::run(&state.db, &state.live.get(), req).await.map_err(err)
 }

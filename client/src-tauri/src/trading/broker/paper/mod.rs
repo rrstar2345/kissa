@@ -28,7 +28,7 @@ use super::{Broker, BrokerError, BrokerEvent, BrokerResult, Contract, EventTx, O
 use crate::accounts;
 use crate::charts::recorder::in_session;
 use crate::market::market_clock;
-use crate::settings::{PaperConfig, TradingConfig};
+use crate::settings::{AppConfig, LiveConfig};
 use crate::trading::ltp::LtpStore;
 use crate::trading::{store, today_ist, OrderRow};
 use book::PaperBook;
@@ -47,9 +47,8 @@ enum Step {
 
 pub struct PaperBroker {
     pool: SqlitePool,
-    cfg: PaperConfig,
-    allow_off_hours: bool,
-    cutoff: Option<u32>,
+    /// Settings that reload live; read through `cfg()` at the moment of use.
+    live: LiveConfig,
     ltp: Arc<LtpStore>,
     tx: EventTx,
     book: PaperBook,
@@ -65,16 +64,26 @@ fn hhmm(minutes: u32) -> String {
 }
 
 impl PaperBroker {
-    pub fn new(pool: SqlitePool, cfg: &TradingConfig, ltp: Arc<LtpStore>, tx: EventTx) -> Arc<Self> {
+    pub fn new(pool: SqlitePool, live: LiveConfig, ltp: Arc<LtpStore>, tx: EventTx) -> Arc<Self> {
         Arc::new(Self {
             pool,
-            cfg: cfg.paper.clone(),
-            allow_off_hours: cfg.paper_allow_off_hours,
-            cutoff: cfg.square_off_minutes(),
+            live,
             ltp,
             tx,
             book: PaperBook::default(),
         })
+    }
+
+    fn cfg(&self) -> Arc<AppConfig> {
+        self.live.get()
+    }
+
+    /// The simulated broker delay, if one is set.
+    async fn latency(&self) {
+        let ms = self.cfg().trading.paper.latency_ms;
+        if ms > 0 {
+            tokio::time::sleep(Duration::from_millis(ms.min(10_000))).await;
+        }
     }
 
     /// Load open orders from the last run, then match on every price change
@@ -116,7 +125,7 @@ impl PaperBroker {
     }
 
     fn market_open(&self) -> bool {
-        self.allow_off_hours || in_session(market_clock::get_ist_now().timestamp())
+        self.cfg().trading.paper_allow_off_hours || in_session(market_clock::get_ist_now().timestamp())
     }
 
     // ------------------------------------------------------------ matching ---
@@ -128,7 +137,7 @@ impl PaperBroker {
             return Step::Nothing;
         }
         let Some(ltp) = self.ltp.ltp(&p.order.instrument) else { return Step::Nothing };
-        match matching::evaluate(&p.order, p.triggered, ltp, self.cfg.slippage()) {
+        match matching::evaluate(&p.order, p.triggered, ltp, self.cfg().trading.paper.slippage()) {
             Decision::Wait => Step::Nothing,
             Decision::Trigger => {
                 self.book.set_triggered(id);
@@ -175,7 +184,7 @@ impl PaperBroker {
 
     fn expire_day_orders(&self) {
         let today = today_ist();
-        let after_close = !self.allow_off_hours && ist_minutes() >= MARKET_CLOSE_MINUTES;
+        let after_close = !self.cfg().trading.paper_allow_off_hours && ist_minutes() >= MARKET_CLOSE_MINUTES;
         let mut changed = false;
         for p in self.book.all() {
             let stale = p.order.trade_date.as_str() < today.as_str();
@@ -200,11 +209,12 @@ impl PaperBroker {
     /// Reject the order if the account cannot fund it. `exclude` is an order
     /// being modified (its own reservation is replaced by the new one).
     async fn check_funds(&self, o: &OrderRow, exclude: Option<&str>) -> Result<()> {
-        if !self.cfg.enforce_margin {
+        let cfg = self.cfg();
+        if !cfg.trading.paper.enforce_margin {
             return Ok(());
         }
         let Some(capital) = self.account_capital(&o.account_id).await else { return Ok(()) };
-        let pct = self.cfg.short_margin_pct;
+        let pct = cfg.trading.paper.short_margin_pct;
 
         let (realised, charges) = store::account_pnl(&self.pool, &o.account_id).await?;
         let cash = capital + realised - charges;
@@ -263,7 +273,7 @@ impl Broker for PaperBroker {
                 "The market is closed (09:15–15:30 IST, Mon–Fri), so paper orders are rejected. To practise after hours, set trading.paper_allow_off_hours to true in settings.json."
             ));
         }
-        if let Some(cutoff) = self.cutoff {
+        if let Some(cutoff) = self.cfg().trading.square_off_minutes() {
             if o.product == "INTRADAY" && ist_minutes() >= cutoff {
                 return Err(anyhow!(
                     "New INTRADAY orders are not accepted after {} IST (auto square-off). Use the Margin product to carry overnight.",
@@ -275,9 +285,7 @@ impl Broker for PaperBroker {
     }
 
     async fn place(&self, o: &OrderRow, _contract: &Contract) -> BrokerResult<Reply> {
-        if self.cfg.latency_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(self.cfg.latency_ms.min(10_000))).await;
-        }
+        self.latency().await;
         self.book.add(o.clone());
         self.refresh_watch();
         let step = self.step(&o.id);
@@ -299,9 +307,7 @@ impl Broker for PaperBroker {
         changed.price = price;
         changed.trigger_price = trigger_price;
         self.check_funds(&changed, Some(&o.id)).await?;
-        if self.cfg.latency_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(self.cfg.latency_ms.min(10_000))).await;
-        }
+        self.latency().await;
         if !self.book.update(changed.clone()) {
             return Err(BrokerError::rejected("The order is no longer pending"));
         }

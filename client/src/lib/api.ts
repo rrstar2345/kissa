@@ -144,7 +144,9 @@ export const api = {
   syncOrders: (accountId: string) => invoke<number>('sync_orders', { accountId }),
 
   getSettingsJson: () => invoke<string>('get_settings_json'),
-  saveSettingsJson: (json: string) => invoke<void>('save_settings_json', { json }),
+  /** Saves settings.json; returns the sections that only apply after a restart. */
+  saveSettingsJson: (json: string) => invoke<string[]>('save_settings_json', { json }),
+  getRestartPending: () => invoke<string[]>('get_restart_pending'),
   getServerSettings: () => invoke<ServerSettings>('get_server_settings'),
   saveServerSettings: (url: string, port: number, apiKey?: string) =>
     invoke<ServerSettings>('save_server_settings', { url, port, apiKey: apiKey || null }),

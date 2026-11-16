@@ -52,7 +52,7 @@ impl TradingService {
         let totals = store::day_totals(&self.pool, &today).await?;
         let trips = period::closed_on(&self.pool, &today).await?;
         let order_counts = store::order_counts(&self.pool, &today).await?;
-        let buffer = self.cfg.trading.exit_buffer_ticks;
+        let buffer = self.cfg().trading.exit_buffer_ticks;
 
         let mut positions = Vec::new();
         for p in open {

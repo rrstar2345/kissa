@@ -22,7 +22,7 @@ const IST_OFFSET_SECS: i64 = 5 * 3600 + 30 * 60;
 
 impl TradingService {
     pub(super) async fn auto_square_off(&self, catch_up: bool) {
-        let Some(cutoff) = self.cfg.trading.square_off_minutes() else { return };
+        let Some(cutoff) = self.cfg().trading.square_off_minutes() else { return };
         let ist = market_clock::get_ist_now() + chrono::Duration::seconds(IST_OFFSET_SECS);
         let past_cutoff = ist.hour() * 60 + ist.minute() >= cutoff;
         if !past_cutoff && !catch_up {
@@ -70,7 +70,7 @@ impl TradingService {
         }
 
         let buy = p.net_qty < 0;
-        let price = slipped(buy, ltp, self.cfg.trading.paper.slippage());
+        let price = slipped(buy, ltp, self.cfg().trading.paper.slippage());
         let uid = uuid::Uuid::new_v4();
         let now = now_ts();
         let order = OrderRow {

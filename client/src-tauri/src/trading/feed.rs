@@ -271,7 +271,7 @@ async fn fyers_loop(state: SharedState, creds: FyersCreds, symbol: String, expir
                     Ok(data) => {
                         ok = true;
                         let item = ExpiryItem { value: ep.clone(), label: String::new(), date: expiry_iso.clone() };
-                        let snap = fyers::to_snapshot(&data, &symbol, &item, cfg.risk_free_rate);
+                        let snap = fyers::to_snapshot(&data, &symbol, &item, state.live.get().risk_free_rate);
                         let now = market_clock::get_ist_now().timestamp();
                         for row in &snap.rows {
                             for (is_call, leg) in [(true, &row.ce), (false, &row.pe)] {

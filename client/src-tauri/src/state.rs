@@ -12,13 +12,16 @@ use crate::market::fyers_socket::Hub;
 use crate::market::market_clock::SharedSessionState;
 use crate::market::status::SharedMarketStatus;
 use crate::market::symbols::FnoIndex;
-use crate::settings::{AppConfig, AppPaths};
+use crate::settings::{AppConfig, AppPaths, LiveConfig};
 use crate::stats::SharedStats;
 use crate::trading::ltp::LtpStore;
 use crate::trading::service::TradingService;
 
 pub struct AppState {
+    /// Settings as read at startup (what streams, sockets and limiters were built from).
     pub config: AppConfig,
+    /// Settings as they apply now: also follows the ones that reload live (see `LiveConfig`).
+    pub live: LiveConfig,
     pub paths: AppPaths,
     pub db: SqlitePool,
     pub stats: SharedStats,

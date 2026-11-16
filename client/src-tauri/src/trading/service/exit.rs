@@ -50,7 +50,7 @@ impl TradingService {
         let mut p = p.clone();
         p.net_qty = now.net_qty;
         let p = &p;
-        let (side, lots, price) = plan_exit(p.net_qty, p.lot_size, p.ltp, self.cfg.trading.exit_buffer_ticks)?;
+        let (side, lots, price) = plan_exit(p.net_qty, p.lot_size, p.ltp, self.cfg().trading.exit_buffer_ticks)?;
 
         let mut cancelled = 0;
         for o in store::open_orders(&self.pool, None).await? {

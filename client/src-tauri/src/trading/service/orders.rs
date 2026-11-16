@@ -83,7 +83,7 @@ impl TradingService {
         if let Some(l) = scrip::lot_size_for_symbol(&self.pool, symbol).await? {
             return Ok(ContractInfo { lot_size: Some(l), security_id: None, trading_symbol: None, lot_source: "dhan".into() });
         }
-        let fallback = self.cfg.trading.fallback_lot_sizes.get(&symbol.to_uppercase()).copied();
+        let fallback = self.cfg().trading.fallback_lot_sizes.get(&symbol.to_uppercase()).copied();
         Ok(ContractInfo {
             lot_size: fallback,
             security_id: None,
@@ -93,7 +93,7 @@ impl TradingService {
     }
 
     pub async fn refresh_instruments(&self) -> Result<usize> {
-        scrip::refresh(&self.pool, &self.cfg.trading).await
+        scrip::refresh(&self.pool, &self.cfg().trading).await
     }
 
     /// Lot size, plus the securityId and trading symbol when the broker needs them.
@@ -107,8 +107,8 @@ impl TradingService {
     ) -> Result<Contract> {
         let mut found = scrip::lookup(&self.pool, symbol, expiry, strike, is_call).await?;
         if found.is_none() && need_ids {
-            if scrip::is_stale(&self.pool, self.cfg.trading.scrip_refresh_hours).await {
-                scrip::refresh(&self.pool, &self.cfg.trading)
+            if scrip::is_stale(&self.pool, self.cfg().trading.scrip_refresh_hours).await {
+                scrip::refresh(&self.pool, &self.cfg().trading)
                     .await
                     .map_err(|e| anyhow!("Could not load the Dhan instrument list: {e}"))?;
                 found = scrip::lookup(&self.pool, symbol, expiry, strike, is_call).await?;
@@ -184,7 +184,7 @@ impl TradingService {
         // Stop-loss / target legs (paper only; a live broker keeps its own bracket rules).
         let bracket = match &input.bracket {
             Some(b) => {
-                let checked = validate_bracket(&c.side, input.price, b, self.cfg.trading.exit_buffer_ticks)?;
+                let checked = validate_bracket(&c.side, input.price, b, self.cfg().trading.exit_buffer_ticks)?;
                 if checked.is_some() && acct.kind != "paper" {
                     return Err(anyhow!("Bracket orders (stop-loss / target) are available on paper accounts only"));
                 }

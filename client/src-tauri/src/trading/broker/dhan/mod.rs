@@ -17,14 +17,15 @@ use tokio::sync::mpsc::unbounded_channel;
 use super::{Broker, BrokerError, BrokerEvent, BrokerResult, Contract, EventTx, OrderUpdate, Reply};
 use crate::accounts;
 use crate::secrets;
-use crate::settings::TradingConfig;
+use crate::settings::LiveConfig;
 use crate::trading::charges;
 use crate::trading::{OrderRow, SEGMENT_FNO};
 use proxy::{Ack, DhanConn, DhanEvent, Hub, ModifyBody, PlaceBody, ProxyError, ProxyOrder};
 
 pub struct DhanBroker {
     pool: SqlitePool,
-    cfg: TradingConfig,
+    /// Settings that reload live (brokerage); the request timeout is read when a connection is built.
+    live: LiveConfig,
     hub: Hub,
     /// Proxy events go here and are translated to `BrokerEvent`s.
     proxy_tx: tokio::sync::mpsc::UnboundedSender<DhanEvent>,
@@ -78,7 +79,7 @@ fn reply_from(ack: Ack, fallback_status: &str, message: &str) -> Reply {
 }
 
 impl DhanBroker {
-    pub fn new(pool: SqlitePool, cfg: &TradingConfig, tx: EventTx) -> Arc<Self> {
+    pub fn new(pool: SqlitePool, live: LiveConfig, tx: EventTx) -> Arc<Self> {
         let (proxy_tx, mut proxy_rx) = unbounded_channel::<DhanEvent>();
         let out = tx.clone();
         tauri::async_runtime::spawn(async move {
@@ -88,7 +89,7 @@ impl DhanBroker {
                 }
             }
         });
-        Arc::new(Self { pool, cfg: cfg.clone(), hub: Hub::default(), proxy_tx, tx })
+        Arc::new(Self { pool, live, hub: Hub::default(), proxy_tx, tx })
     }
 
     /// The cached connection for an account, rebuilt when credentials change.
@@ -114,7 +115,7 @@ impl DhanBroker {
             }
             self.hub.drop_account(account_id).await; // credentials changed
         }
-        let conn = DhanConn::new(account_id.to_string(), base, api_key, client_id, token, self.cfg.request_timeout_secs)?;
+        let conn = DhanConn::new(account_id.to_string(), base, api_key, client_id, token, self.live.get().trading.request_timeout_secs)?;
         self.hub.insert(conn.clone()).await;
         Ok(conn)
     }
@@ -194,7 +195,9 @@ impl Broker for DhanBroker {
     }
 
     async fn brokerage(&self, _o: &OrderRow, price: f64, qty: i64) -> f64 {
-        charges::dhan_brokerage(self.cfg.dhan_brokerage_per_order, self.cfg.dhan_brokerage_cap_pct, price * qty as f64)
+        let cfg = self.live.get();
+        let t = &cfg.trading;
+        charges::dhan_brokerage(t.dhan_brokerage_per_order, t.dhan_brokerage_cap_pct, price * qty as f64)
     }
 
     async fn connect(&self, account_id: &str) -> Result<()> {

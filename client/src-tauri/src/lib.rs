@@ -61,9 +61,10 @@ pub fn run() {
                 alerts.clone(),
             ));
             market::fyers_api::install(fyers_api.clone());
+            let live = settings::LiveConfig::new(config.clone());
             let (trading_svc, broker_rx) = trading::service::TradingService::new(
                 pool.clone(),
-                config.clone(),
+                live.clone(),
                 ltp.clone(),
                 app.handle().clone(),
                 alerts.clone(),
@@ -75,6 +76,7 @@ pub fn run() {
             let market_status = market::status::MarketStatusService::new(source);
             let state: SharedState = Arc::new(AppState {
                 config: config.clone(),
+                live,
                 paths: paths.clone(),
                 db: pool.clone(),
                 stats: stats::new_shared_stats(),
@@ -285,6 +287,7 @@ pub fn run() {
             commands::sync_orders,
             commands::get_settings_json,
             commands::save_settings_json,
+            commands::get_restart_pending,
             commands::get_server_settings,
             commands::save_server_settings,
             commands::test_server,

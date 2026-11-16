@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::{env, fs, io, path::PathBuf};
 use tracing::{error, info};
 
@@ -483,6 +484,68 @@ impl Default for AppConfig {
     }
 }
 
+/// The configuration as it applies right now. `AppState.config` is the
+/// snapshot taken at startup (what streams, sockets and limiters were built
+/// from); this handle also follows the settings that can change while the app
+/// runs. Read it with `get()` at the moment of use, and do not keep the result
+/// across long waits.
+///
+/// Live: `trading.*` except `request_timeout_secs`, `risk_free_rate` and
+/// `server`. Everything else needs a restart (see `restart_pending`).
+#[derive(Clone)]
+pub struct LiveConfig(Arc<RwLock<Arc<AppConfig>>>);
+
+impl LiveConfig {
+    pub fn new(cfg: AppConfig) -> Self {
+        Self(Arc::new(RwLock::new(Arc::new(cfg))))
+    }
+
+    pub fn get(&self) -> Arc<AppConfig> {
+        match self.0.read() {
+            Ok(g) => g.clone(),
+            Err(e) => e.into_inner().clone(),
+        }
+    }
+
+    /// Take over the live settings of `new`. Returns the sections of `new`
+    /// that differ from what is running and only take effect after a restart.
+    pub fn apply(&self, new: &AppConfig) -> Vec<&'static str> {
+        let mut guard = self.0.write().unwrap_or_else(|e| e.into_inner());
+        let pending = restart_pending(&guard, new);
+        let mut merged = (**guard).clone();
+        merged.trading = TradingConfig { request_timeout_secs: merged.trading.request_timeout_secs, ..new.trading.clone() };
+        merged.risk_free_rate = new.risk_free_rate;
+        merged.server = new.server.clone();
+        *guard = Arc::new(merged);
+        pending
+    }
+}
+
+/// Settings sections of `new` that differ from the running configuration and
+/// are only read at startup.
+pub fn restart_pending(running: &AppConfig, new: &AppConfig) -> Vec<&'static str> {
+    fn differs<T: Serialize>(a: &T, b: &T) -> bool {
+        serde_json::to_value(a).ok() != serde_json::to_value(b).ok()
+    }
+    let mut out = Vec::new();
+    if differs(&running.system, &new.system) {
+        out.push("system");
+    }
+    if differs(&running.market_runtime, &new.market_runtime) {
+        out.push("market_runtime");
+    }
+    if differs(&running.fyers, &new.fyers) {
+        out.push("fyers");
+    }
+    if differs(&running.charts, &new.charts) {
+        out.push("charts");
+    }
+    if running.trading.request_timeout_secs != new.trading.request_timeout_secs {
+        out.push("trading.request_timeout_secs");
+    }
+    out
+}
+
 pub fn load_or_create_config(paths: &AppPaths) -> io::Result<AppConfig> {
     if paths.settings_file.exists() {
         match fs::read_to_string(&paths.settings_file)
@@ -607,5 +670,44 @@ mod tests {
         assert_eq!(base("http://127.0.0.1", 8080).unwrap(), "http://127.0.0.1:8080");
         assert_eq!(base("http://localhost:9000", 1).unwrap(), "http://localhost:9000");
         assert!(base("http://192.168.1.10", 8080).is_err());
+    }
+
+    #[test]
+    fn live_apply_takes_live_fields_and_reports_restart_ones() {
+        let live = LiveConfig::new(AppConfig::default());
+        let mut new = AppConfig::default();
+        new.trading.paper.slippage_ticks = 3;
+        new.trading.exit_buffer_ticks = 5;
+        new.trading.charges.gst_pct = 20.0;
+        new.risk_free_rate = 0.065;
+        new.server.url = "https://proxy.example.com".into();
+        new.charts.flush_secs = 30;
+        new.trading.request_timeout_secs = 99;
+
+        let pending = live.apply(&new);
+        assert_eq!(pending, vec!["charts", "trading.request_timeout_secs"]);
+
+        let now = live.get();
+        assert_eq!(now.trading.paper.slippage_ticks, 3);
+        assert_eq!(now.trading.exit_buffer_ticks, 5);
+        assert_eq!(now.trading.charges.gst_pct, 20.0);
+        assert_eq!(now.risk_free_rate, 0.065);
+        assert_eq!(now.server.url, "https://proxy.example.com");
+        // Restart-only values keep what is running.
+        assert_eq!(now.charts.flush_secs, ChartsConfig::default().flush_secs);
+        assert_eq!(now.trading.request_timeout_secs, TradingConfig::default().request_timeout_secs);
+    }
+
+    #[test]
+    fn restart_pending_clears_when_reverted() {
+        let running = AppConfig::default();
+        let mut new = AppConfig::default();
+        assert!(restart_pending(&running, &new).is_empty());
+        new.fyers.poll_secs += 1;
+        new.system.holidays.base = "https://example.com".into();
+        new.market_runtime.reconnect_delay_seconds += 1;
+        assert_eq!(restart_pending(&running, &new), vec!["system", "market_runtime", "fyers"]);
+        new = AppConfig::default();
+        assert!(restart_pending(&running, &new).is_empty());
     }
 }
