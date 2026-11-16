@@ -4,6 +4,7 @@
   import { api } from '$lib/api';
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
+  import ExportCsv from '$lib/components/ExportCsv.svelte';
   import { compact, istDay, istStamp, num, signed, todayIst, trend } from '$lib/format';
   import { livePosition } from '$lib/live';
   import { contractName, trading } from '$lib/trading.svelte';
@@ -153,6 +154,9 @@
         {#each accounts as a (a.accountId)}<option value={a.accountId}>{a.name}</option>{/each}
       </select>
       {#if periodText}<span class="num text-xs text-base-content/60">{periodText}</span>{/if}
+      <div class="ml-auto">
+        <ExportCsv dataset="diary" {accountId} from={perf?.from ?? ''} to={perf?.to ?? ''} />
+      </div>
     </div>
     <p class="text-xs text-base-content/60">
       Realised P&L and charges by the time of each fill, closed trades only. Open positions are not included (see the top bar for live P&L).

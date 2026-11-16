@@ -421,6 +421,55 @@ fn blank_group(key: String, label: String) -> Group {
     Group { key, label, orders: 0, trades: 0, fills: 0, gross: 0.0, charges: 0.0, net: 0.0, rows: Vec::new() }
 }
 
+/// One round trip as the diary shows it (shared by the Dashboard and the CSV export).
+fn trip_row(t: &Trip, names: &HashMap<String, String>) -> TripRow {
+    let gross = r2(t.gross);
+    let charges = r2(t.charges);
+    TripRow {
+        id: t.id.clone(),
+        account_id: t.account_id.clone(),
+        account_name: names.get(&t.account_id).cloned().unwrap_or_default(),
+        symbol: t.symbol.clone(),
+        expiry: t.expiry.clone(),
+        strike: t.strike,
+        is_call: t.is_call,
+        product: t.product.clone(),
+        long: t.long,
+        qty: t.entry_qty,
+        entry_price: if t.entry_qty > 0 { r2(t.entry_value / t.entry_qty as f64) } else { 0.0 },
+        exit_price: (t.exit_qty > 0).then(|| r2(t.exit_value / t.exit_qty as f64)),
+        entry_ts: t.entry_ts.clone(),
+        exit_ts: t.exit_ts.clone(),
+        gross,
+        charges,
+        net: r2(gross - charges),
+        closed: t.closed,
+    }
+}
+
+/// The diary as a flat list for the CSV export: every round trip listed
+/// between two IST dates (inclusive) as `(date, row)`, oldest first. A trip is
+/// dated by the fill that closed it (its last fill while still open), exactly
+/// like the Dashboard. `trades` must be oldest first and complete for every
+/// contract involved, as `store::trades_for_window` returns them.
+pub fn diary_rows(trades: &[TradeRow], from: &str, to: &str, names: &HashMap<String, String>) -> Vec<(String, TripRow)> {
+    let (_, trips) = fold(trades);
+    let mut trips: Vec<Trip> = trips.into_iter().filter(|t| t.date.as_str() >= from && t.date.as_str() <= to).collect();
+    trips.sort_by(|a, b| {
+        (a.date.as_str(), a.entry_ts.as_str(), a.id.as_str()).cmp(&(b.date.as_str(), b.entry_ts.as_str(), b.id.as_str()))
+    });
+    trips.iter().map(|t| (t.date.clone(), trip_row(t, names))).collect()
+}
+
+/// A round trip with the IST date it is listed on (Orders page, Round trips view).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatedTrip {
+    pub date: String,
+    #[serde(flatten)]
+    pub trip: TripRow,
+}
+
 /// Pure part of the dashboard: `trades` oldest first (see
 /// `store::trades_for_window`), `orders` = (trade date, created at).
 pub fn compute(
@@ -460,28 +509,7 @@ pub fn compute(
     for t in trips.iter().filter(|t| t.date >= sum_from && t.date <= sum_to) {
         let (key, label) = group_of(view, &t.date, t.hour);
         let g = groups.entry(key.clone()).or_insert_with(|| blank_group(key, label));
-        let gross = r2(t.gross);
-        let charges = r2(t.charges);
-        g.rows.push(TripRow {
-            id: t.id.clone(),
-            account_id: t.account_id.clone(),
-            account_name: names.get(&t.account_id).cloned().unwrap_or_default(),
-            symbol: t.symbol.clone(),
-            expiry: t.expiry.clone(),
-            strike: t.strike,
-            is_call: t.is_call,
-            product: t.product.clone(),
-            long: t.long,
-            qty: t.entry_qty,
-            entry_price: if t.entry_qty > 0 { r2(t.entry_value / t.entry_qty as f64) } else { 0.0 },
-            exit_price: (t.exit_qty > 0).then(|| r2(t.exit_value / t.exit_qty as f64)),
-            entry_ts: t.entry_ts.clone(),
-            exit_ts: t.exit_ts.clone(),
-            gross,
-            charges,
-            net: r2(gross - charges),
-            closed: t.closed,
-        });
+        g.rows.push(trip_row(t, names));
     }
     let mut groups: Vec<Group> = groups.into_values().collect();
     for g in groups.iter_mut() {
@@ -681,6 +709,30 @@ mod tests {
         assert_eq!((p.groups[0].key.as_str(), p.groups[0].trades), ("11", 1)); // newest first
         assert_eq!(p.groups[1].orders, 1);
         assert_eq!(p.groups[0].rows.len(), 1);
+    }
+
+    #[test]
+    fn diary_rows_list_trips_on_the_day_they_close_within_the_range() {
+        let t = [
+            fill("1", "BUY", 100, 50.0, 0.0, 10.0, "2026-11-09", "2026-11-09T04:00:00Z"),
+            // closes the next day: listed on the 10th with its full result
+            fill("2", "SELL", 100, 60.0, 1000.0, 10.0, "2026-11-10", "2026-11-10T04:00:00Z"),
+            // still open
+            fill("3", "BUY", 10, 5.0, 0.0, 0.0, "2026-11-12", "2026-11-12T04:00:00Z"),
+        ];
+        let names = HashMap::from([("a".to_string(), "Paper".to_string())]);
+
+        let one = diary_rows(&t, "2026-11-10", "2026-11-10", &names);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, "2026-11-10");
+        assert_eq!((one[0].1.net, one[0].1.closed, one[0].1.account_name.as_str()), (980.0, true, "Paper"));
+
+        // The opening day lists nothing: the trip is dated by its closing fill.
+        assert!(diary_rows(&t, "2026-11-09", "2026-11-09", &names).is_empty());
+
+        let all = diary_rows(&t, "2026-11-01", "2026-11-30", &names);
+        let seen: Vec<(&str, bool)> = all.iter().map(|(d, r)| (d.as_str(), r.closed)).collect();
+        assert_eq!(seen, [("2026-11-10", true), ("2026-11-12", false)]);
     }
 
     #[test]

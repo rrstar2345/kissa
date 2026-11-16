@@ -8,7 +8,8 @@ use super::TradingService;
 use crate::accounts;
 use crate::charts::instrument::option_key;
 use crate::market::market_clock;
-use crate::trading::period::{self, Performance};
+use crate::trading::export::{self, ExportRequest, Rendered};
+use crate::trading::period::{self, DatedTrip, Performance};
 use crate::trading::pricing::{exit_price, r2};
 use crate::trading::{
     now_ts, store, today_ist, AccountSummary, Dashboard, OrderRow, Position, QuoteView, TradeRow,
@@ -119,6 +120,31 @@ impl TradingService {
         let names: HashMap<String, String> =
             accounts::list(&self.pool).await?.into_iter().map(|a| (a.id, a.name)).collect();
         period::load(&self.pool, view, anchor, account, &names).await
+    }
+
+    /// Round trips (entry + exit as one row) for the Orders page, newest first.
+    /// `date` = trips listed on that IST day (the day they closed); `None` = all.
+    pub async fn list_round_trips(&self, account: Option<&str>, date: Option<&str>) -> Result<Vec<DatedTrip>> {
+        let (from, to) = match date {
+            Some(d) => (d, d),
+            None => ("0000-01-01", "9999-12-31"),
+        };
+        let names: HashMap<String, String> =
+            accounts::list(&self.pool).await?.into_iter().map(|a| (a.id, a.name)).collect();
+        let trades = store::trades_for_window(&self.pool, account, from, to).await?;
+        let mut rows: Vec<DatedTrip> = period::diary_rows(&trades, from, to, &names)
+            .into_iter()
+            .map(|(date, trip)| DatedTrip { date, trip })
+            .collect();
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// Orders, trades or the diary of an IST date range as CSV text.
+    pub async fn export_csv(&self, req: &ExportRequest) -> Result<Rendered> {
+        let names: HashMap<String, String> =
+            accounts::list(&self.pool).await?.into_iter().map(|a| (a.id, a.name)).collect();
+        export::render(&self.pool, req, &names).await
     }
 
     pub async fn list_orders(&self, account: Option<&str>, date: Option<&str>) -> Result<Vec<OrderRow>> {

@@ -36,6 +36,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Native save dialog for the CSV export (shown from Rust, see `commands::export_csv`).
+        .plugin(tauri_plugin_dialog::init())
         .on_window_event(popout::on_window_event)
         .setup(|app| {
             let paths = settings::setup_app_folders()?;
@@ -258,8 +260,10 @@ pub fn run() {
             commands::modify_order,
             commands::list_orders,
             commands::list_trades,
+            commands::list_round_trips,
             commands::get_dashboard,
             commands::get_performance,
+            commands::export_csv,
             commands::exit_position,
             commands::exit_all,
             commands::get_risk,

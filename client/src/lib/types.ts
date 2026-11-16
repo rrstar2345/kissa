@@ -613,6 +613,11 @@ export interface PerfTrip {
   closed: boolean;
 }
 
+/** A round trip on the Orders page: listed on the IST day it closed (its last fill while open). */
+export interface RoundTrip extends PerfTrip {
+  date: string;
+}
+
 export interface PerfGroup {
   key: string;
   label: string;
@@ -632,6 +637,23 @@ export interface Performance {
   summary: PerfSummary;
   columns: PerfColumn[];
   groups: PerfGroup[];
+}
+
+export type ExportDataset = 'orders' | 'trades' | 'diary';
+
+export interface ExportRequest {
+  dataset: ExportDataset;
+  /** IST dates, YYYY-MM-DD, inclusive. */
+  from: string;
+  to: string;
+  accountId: string | null;
+}
+
+export interface ExportResult {
+  /** Rows found (0 = nothing to export). */
+  rows: number;
+  /** Saved file; null when nothing was found or the save dialog was cancelled. */
+  path: string | null;
 }
 
 export interface BrokerStatus {

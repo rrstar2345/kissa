@@ -30,7 +30,8 @@ Choose the source on the Option Chain page or under **Accounts → Market data s
 - **Dhan**: one proxy session per account; live updates over the proxy WebSocket with `since` replay, orders de-duplicated by `correlationId`, and a periodic order-book resync. The contract's Dhan `securityId` comes from Dhan's public instrument CSV, cached in SQLite and refreshed daily (**Refresh instruments** in the ticket if a contract is missing).
 - **Ledger**: `orders` and `trades` tables in `kissa.db`. Positions are derived from trades (average cost) and are not stored. Charges are an estimate per fill: flat brokerage per order, STT, exchange fee, SEBI, stamp duty and GST.
 - **Prices**: a shared store fed by the chain engines, plus an automatic background stream for any symbol/expiry that has open positions or pending paper orders.
-- **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**.
+- **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**. The **Trades** tab has a `Fills | Round trips` toggle (default **Round trips**): a round trip is entry and exit shown as one trade, listed on the day it closed (open trades show their entry only); **Fills** lists every execution. Round trips are counted exactly like the Dashboard.
+- **CSV export**: **Export CSV** on the Orders page and the Dashboard opens a dialog: choose **Orders**, **Trades** (fills) or **Trader's diary** (one row per round trip), an IST From / To range (presets: Today, This month, Last month, This year) and an account, then **Save as…** opens your system's save dialog. Dates and times are IST, rows are oldest first with no row limit, and each export is noted in the journal. Text such as account names is prefixed with `'` if it would otherwise start a spreadsheet formula (`=`, `+`, `-`, `@`).
 - **Dashboard**: a `Daily | Monthly | Yearly` toggle (default Monthly), a period picker and an accounts filter drive everything below.
   - **Cards**: Net P&L, Gross P&L, Trades, Total charges and ROI for the period (Daily = the day, Monthly = the month, Yearly = the 12 months ending at the selected month).
   - **Calendar heat view**: columns of the last 4 days (one cell per hour), the last 4 months (calendar, one cell per day) or the last 12 months (calendar, coloured cells only), each with a net P&L pill. Green = net profit, red = net loss, yellow = net zero, grey = no activity.
@@ -81,7 +82,7 @@ pnpm tauri build    # release bundle
 src/                     SvelteKit SPA (Svelte 5 runes)
   app.css                Tailwind + DaisyUI themes and all custom styling
   lib/columns.ts         option-chain column definitions
-  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel, ExitButton, ExitAllButton
+  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel, ExitButton, ExitAllButton, ExportCsv
   lib/trading.svelte.ts  order-update / broker-status listeners, status helpers
   routes/                dashboard, chain, charts, orders, accounts, settings
 src-tauri/src/
@@ -93,5 +94,6 @@ src-tauri/src/
     service/             orders (place/modify/cancel), exit, squareoff, views (dashboard/quotes)
     store.rs pricing.rs charges.rs ltp.rs feed.rs scrip.rs server.rs  (SQLite ledger, tick maths, costs, prices, instruments, order gate)
     period.rs            dashboard aggregation: round-trip trades, cards, calendar heat view, grouped diary
+    export.rs            CSV builders for orders, trades and the diary (saved via the native dialog, tauri-plugin-dialog)
   accounts.rs secrets.rs db.rs settings.rs commands.rs
 ```

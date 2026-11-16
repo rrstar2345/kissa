@@ -15,6 +15,8 @@ import type {
   Performance,
   DashView,
   ExitAllResult,
+  ExportRequest,
+  ExportResult,
   IndicatorSpec,
   KillResult,
   InstrumentList,
@@ -25,6 +27,7 @@ import type {
   OrderRow,
   PlaceOrderInput,
   QuoteView,
+  RoundTrip,
   Algo,
   AlgoJournalRow,
   AlgoView,
@@ -93,6 +96,8 @@ export const api = {
     invoke<OrderRow[]>('list_orders', { accountId: accountId ?? null, date: date ?? null }),
   listTrades: (accountId?: string | null, date?: string | null) =>
     invoke<TradeRow[]>('list_trades', { accountId: accountId ?? null, date: date ?? null }),
+  listRoundTrips: (accountId?: string | null, date?: string | null) =>
+    invoke<RoundTrip[]>('list_round_trips', { accountId: accountId ?? null, date: date ?? null }),
   exitPosition: (accountId: string, instrument: string, product: string) =>
     invoke<OrderRow>('exit_position', { accountId, instrument, product }),
   exitAll: (accountId?: string | null) => invoke<ExitAllResult>('exit_all', { accountId: accountId ?? null }),
@@ -131,6 +136,7 @@ export const api = {
   /** `anchor`: YYYY-MM-DD (daily) or YYYY-MM (monthly, yearly). */
   getPerformance: (view: DashView, anchor: string, accountId: string | null) =>
     invoke<Performance>('get_performance', { view, anchor, accountId }),
+  exportCsv: (request: ExportRequest) => invoke<ExportResult>('export_csv', { request }),
   contractInfo: (symbol: string, expiry: string, strike: number, isCall: boolean) =>
     invoke<ContractInfo>('contract_info', { symbol, expiry, strike, isCall }),
   refreshInstruments: () => invoke<number>('refresh_instruments'),

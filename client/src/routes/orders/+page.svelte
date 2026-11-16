@@ -6,12 +6,14 @@
   import { api } from '$lib/api';
   import ExitAllButton from '$lib/components/ExitAllButton.svelte';
   import ExitButton from '$lib/components/ExitButton.svelte';
+  import ExportCsv from '$lib/components/ExportCsv.svelte';
   import { istTime, num, signed, todayIst, trend } from '$lib/format';
   import { livePosition } from '$lib/live';
   import { contractName, isOpen, statusClass, trading } from '$lib/trading.svelte';
-  import type { Account, OrderRow, Position, TradeRow } from '$lib/types';
+  import type { Account, OrderRow, Position, RoundTrip, TradeRow } from '$lib/types';
 
   type Tab = 'orders' | 'trades' | 'positions';
+  type TradeView = 'trips' | 'fills';
 
   let accounts = $state<Account[]>([]);
   let accountId = $state(''); // '' = all
@@ -28,6 +30,9 @@
     goto(`${page.url.pathname}?tab=${t}`, { replaceState: true, noScroll: true, keepFocus: true });
   let orders = $state.raw<OrderRow[]>([]);
   let trades = $state.raw<TradeRow[]>([]);
+  let trips = $state.raw<RoundTrip[]>([]);
+  // Trades tab: one row per round trip (entry + exit) or one per fill.
+  let tradeView = $state<TradeView>('trips');
   let basePositions = $state.raw<Position[]>([]);
   // Prices and unrealised P&L follow the live quote stream; the lists above
   // are only refetched when orders change.
@@ -45,6 +50,10 @@
 
   const totalCharges = $derived(trades.reduce((s, t) => s + t.charges, 0));
   const totalRealised = $derived(trades.reduce((s, t) => s + t.realised, 0));
+  const tripGross = $derived(trips.reduce((s, t) => s + t.gross, 0));
+  const tripCharges = $derived(trips.reduce((s, t) => s + t.charges, 0));
+  const tripNet = $derived(trips.reduce((s, t) => s + t.net, 0));
+  const tradeCount = $derived(tradeView === 'trips' ? trips.length : trades.length);
 
   onMount(async () => {
     try {
@@ -57,13 +66,15 @@
   async function load() {
     try {
       const acc = accountId || null;
-      const [o, t, d] = await Promise.all([
+      const [o, t, r, d] = await Promise.all([
         api.listOrders(acc, dateArg),
         api.listTrades(acc, dateArg),
+        api.listRoundTrips(acc, dateArg),
         api.getDashboard(acc)
       ]);
       orders = o;
       trades = t;
+      trips = r;
       basePositions = d.positions;
       error = '';
     } catch (e) {
@@ -158,6 +169,12 @@
     {/if}
 
     <div class="ml-auto flex items-center gap-2">
+      <ExportCsv
+        dataset={tab === 'orders' ? 'orders' : tradeView === 'trips' ? 'diary' : 'trades'}
+        {accountId}
+        from={allDates ? '' : date}
+        to={allDates ? '' : date}
+      />
       <ExitAllButton {positions} accountId={accountId || null} ondone={load} />
       <a href="/chain" class="btn btn-sm btn-primary">New order from chain</a>
     </div>
@@ -168,7 +185,7 @@
 
   <div role="tablist" class="tabs tabs-border">
     <button role="tab" class="tab {tab === 'orders' ? 'tab-active' : ''}" onclick={() => setTab('orders')}>Orders ({orders.length})</button>
-    <button role="tab" class="tab {tab === 'trades' ? 'tab-active' : ''}" onclick={() => setTab('trades')}>Trades ({trades.length})</button>
+    <button role="tab" class="tab {tab === 'trades' ? 'tab-active' : ''}" onclick={() => setTab('trades')}>Trades ({tradeCount})</button>
     <button role="tab" class="tab {tab === 'positions' ? 'tab-active' : ''}" onclick={() => setTab('positions')}>Positions ({positions.length})</button>
   </div>
 
@@ -225,6 +242,57 @@
       </table>
     </div>
   {:else if tab === 'trades'}
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="join">
+        <button class="btn btn-xs join-item {tradeView === 'fills' ? 'btn-primary' : ''}" onclick={() => (tradeView = 'fills')}>Fills</button>
+        <button class="btn btn-xs join-item {tradeView === 'trips' ? 'btn-primary' : ''}" onclick={() => (tradeView = 'trips')}>Round trips</button>
+      </div>
+      <span class="text-xs text-base-content/60">
+        {tradeView === 'trips'
+          ? 'Entry and exit as one trade, listed on the day it closed. Open trades show their entry only.'
+          : 'Every execution, one row per fill.'}
+      </span>
+    </div>
+
+    {#if tradeView === 'trips'}
+    <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
+      <table class="table table-sm">
+        <thead>
+          <tr><th>Date</th><th>Account</th><th>Contract</th><th>Side</th><th class="text-right">Qty</th><th class="text-right">Entry</th><th class="text-right">Exit</th><th class="text-right">Gross</th><th class="text-right">Charges</th><th class="text-right">Net</th></tr>
+        </thead>
+        <tbody>
+          {#each trips as t (t.id)}
+            <tr>
+              <td class="num whitespace-nowrap">{t.date}</td>
+              <td>{nameOf(t.accountId)}</td>
+              <td class="whitespace-nowrap">{contractName(t)} <span class="text-xs text-base-content/50">{t.product === 'INTRADAY' ? 'MIS' : 'NRML'}</span></td>
+              <td class={t.long ? 'up' : 'down'}>{t.long ? 'Long' : 'Short'}</td>
+              <td class="num text-right">{t.qty}</td>
+              <td class="num whitespace-nowrap text-right">{istTime(t.entryTs)} @ {num(t.entryPrice)}</td>
+              <td class="num whitespace-nowrap text-right">
+                {#if t.closed && t.exitTs}{istTime(t.exitTs)} @ {num(t.exitPrice)}{:else}<span class="badge badge-xs badge-warning">open</span>{/if}
+              </td>
+              <td class="num text-right {trend(t.gross)}">{t.gross ? signed(t.gross) : '—'}</td>
+              <td class="num text-right">{num(t.charges)}</td>
+              <td class="num text-right font-semibold {trend(t.net)}">{signed(t.net)}</td>
+            </tr>
+          {:else}
+            <tr><td colspan="10" class="py-8 text-center text-base-content/60">No trades.</td></tr>
+          {/each}
+        </tbody>
+        {#if trips.length}
+          <tfoot>
+            <tr class="font-semibold">
+              <td colspan="7" class="text-right">Total</td>
+              <td class="num text-right {trend(tripGross)}">{signed(tripGross)}</td>
+              <td class="num text-right">{num(tripCharges)}</td>
+              <td class="num text-right {trend(tripNet)}">{signed(tripNet)}</td>
+            </tr>
+          </tfoot>
+        {/if}
+      </table>
+    </div>
+    {:else}
     <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
       <table class="table table-sm">
         <thead>
@@ -257,6 +325,7 @@
         {/if}
       </table>
     </div>
+    {/if}
   {:else}
     <div class="overflow-x-auto rounded-box border border-base-300 bg-base-100">
       <table class="table table-sm">

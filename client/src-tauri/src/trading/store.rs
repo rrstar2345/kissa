@@ -447,6 +447,38 @@ pub async fn list_trades(pool: &SqlitePool, account: Option<&str>, date: Option<
     .await?)
 }
 
+/// Every order of an IST date range (inclusive), oldest first. Unlike
+/// `list_orders` there is no row cap: this feeds the CSV export.
+pub async fn orders_between(pool: &SqlitePool, account: Option<&str>, from: &str, to: &str) -> Result<Vec<OrderRow>> {
+    Ok(sqlx::query_as::<_, OrderRow>(AssertSqlSafe(format!(
+        "SELECT {ORDER_COLS} FROM orders
+         WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?
+         ORDER BY created_at, id"
+    )))
+    .bind(account)
+    .bind(account)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Every fill of an IST date range (inclusive), oldest first, without the row
+/// cap of `list_trades`. Feeds the CSV export.
+pub async fn trades_between(pool: &SqlitePool, account: Option<&str>, from: &str, to: &str) -> Result<Vec<TradeRow>> {
+    Ok(sqlx::query_as::<_, TradeRow>(AssertSqlSafe(format!(
+        "SELECT {TRADE_COLS} FROM trades
+         WHERE (? IS NULL OR account_id = ?) AND trade_date >= ? AND trade_date <= ?
+         ORDER BY ts, rowid"
+    )))
+    .bind(account)
+    .bind(account)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?)
+}
+
 // ------------------------------------------------------------- positions ---
 
 #[derive(Debug, Clone, sqlx::FromRow)]

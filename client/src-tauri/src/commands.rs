@@ -600,7 +600,8 @@ pub async fn backfill_chart(
 
 // --------------------------------------------------------------- trading ---
 
-use crate::trading::period::Performance;
+use crate::trading::export::ExportRequest;
+use crate::trading::period::{DatedTrip, Performance};
 use crate::trading::{ContractInfo, Dashboard, ExitAllResult, OrderRow, PlaceOrderInput, QuoteView, TradeRow};
 
 #[tauri::command]
@@ -642,6 +643,15 @@ pub async fn list_trades(
 }
 
 #[tauri::command]
+pub async fn list_round_trips(
+    account_id: Option<String>,
+    date: Option<String>,
+    state: State<'_, SharedState>,
+) -> Res<Vec<DatedTrip>> {
+    state.trading.list_round_trips(account_id.as_deref(), date.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
 pub async fn get_dashboard(account_id: Option<String>, state: State<'_, SharedState>) -> Res<Dashboard> {
     state.trading.dashboard(account_id.as_deref()).await.map_err(err)
 }
@@ -654,6 +664,74 @@ pub async fn get_performance(
     state: State<'_, SharedState>,
 ) -> Res<Performance> {
     state.trading.performance(&view, &anchor, account_id.as_deref()).await.map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    /// Data rows found for the request (0: nothing to save).
+    pub rows: usize,
+    /// Where the file was saved; `None` when there was nothing to save or the dialog was cancelled.
+    pub path: Option<String>,
+}
+
+/// Build a CSV (orders, trades or the diary) for an IST date range, ask where
+/// to save it and write it. The dialog belongs to the calling window, so it
+/// also works from a pop-out.
+#[tauri::command]
+pub async fn export_csv(
+    request: ExportRequest,
+    window: tauri::WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Res<ExportResult> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let out = state.trading.export_csv(&request).await.map_err(err)?;
+    if out.rows == 0 {
+        return Ok(ExportResult { rows: 0, path: None });
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Save CSV")
+        .set_file_name(out.file_name.clone())
+        .add_filter("CSV", &["csv"])
+        .save_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    let picked = rx.await.map_err(|_| "The save dialog closed unexpectedly.".to_string())?;
+    let Some(picked) = picked else {
+        return Ok(ExportResult { rows: out.rows, path: None }); // cancelled
+    };
+    let mut path = picked.into_path().map_err(|e| e.to_string())?;
+    if path.extension().is_none() {
+        path.set_extension("csv");
+    }
+    std::fs::write(&path, out.csv.as_bytes()).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut entry = Entry::new(
+        AuditCategory::System,
+        "csv_export",
+        format!("Exported {} {} ({} to {}) to {file}", out.rows, out.dataset.label(), out.from, out.to),
+    )
+    .actor(Actor::User)
+    .detail(serde_json::json!({
+        "dataset": request.dataset,
+        "from": out.from,
+        "to": out.to,
+        "rows": out.rows,
+        "path": path.display().to_string(),
+    }));
+    if let Some(account) = request.account_id.as_deref().filter(|a| !a.is_empty()) {
+        entry = entry.account(account);
+    }
+    audit::record(entry);
+
+    Ok(ExportResult { rows: out.rows, path: Some(path.display().to_string()) })
 }
 
 #[tauri::command]
