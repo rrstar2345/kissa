@@ -105,6 +105,7 @@ impl Card {
         }
     }
 
+    #[cfg(test)]
     pub fn field(mut self, label: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         self.add_field(label, value);
         self

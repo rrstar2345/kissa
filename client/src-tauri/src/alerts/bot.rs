@@ -11,9 +11,10 @@
 //!     that writes to the bot is remembered so its ID can be offered to the user.
 //!   * Otherwise it sleeps and makes no network calls.
 //!
-//! Commands here only read (`/positions`, `/pnl`, `/algos`, `/status`). Anything
-//! that changes state (arm, kill switch, exit) is a later phase and will need
-//! its own opt-in and confirmation step.
+//! Commands read (`/positions`, `/pnl`, `/algos`, `/status`). Anything that
+//! changes state (arm, kill switch, exit) happens only through the control
+//! buttons (`control.rs`), which have their own opt-in (`telegram.controls`),
+//! work only in private allow-listed chats and ask for a confirmation.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -23,6 +24,7 @@ use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
 use super::channels::{self, ApiError};
+use super::control::{self, Keyboard, Prompts};
 use super::config::TELEGRAM_TOKEN;
 use super::render::{ist_stamp, rupees, Card};
 use crate::state::SharedState;
@@ -43,11 +45,12 @@ const TEAL: &str = "#1c8f8f";
 const RED: &str = "#d64545";
 
 /// The command menu Telegram shows next to the message box.
-const MENU: [(&str, &str); 5] = [
+const MENU: [(&str, &str); 6] = [
     ("positions", "Open positions with live P&L"),
     ("pnl", "Today's P&L by account"),
     ("algos", "Algos: armed or not, in a position or flat"),
     ("status", "Market, feeds, risk halts and algos"),
+    ("control", "Kill switch, exit all, halts and algo buttons"),
     ("help", "List the commands"),
 ];
 
@@ -90,6 +93,8 @@ pub struct BotShared {
     seen: Mutex<Vec<SeenChat>>,
     detect_until: Mutex<Option<Instant>>,
     status: Mutex<BotStatus>,
+    /// Confirmations waiting for a button press (see `control`).
+    pub prompts: Prompts,
     /// Wakes the supervisor from its idle sleep (settings saved, detection started).
     pub wake: Notify,
 }
@@ -104,6 +109,7 @@ impl BotShared {
             seen: Mutex::new(Vec::new()),
             detect_until: Mutex::new(None),
             status: Mutex::new(BotStatus::default()),
+            prompts: Prompts::default(),
             wake: Notify::new(),
         })
     }
@@ -186,10 +192,16 @@ impl Chat {
 }
 
 #[derive(Debug, Deserialize)]
+struct User {
+    id: i64,
+}
+
+#[derive(Debug, Deserialize)]
 struct Msg {
     #[serde(default)]
     date: i64,
     chat: Chat,
+    from: Option<User>,
     text: Option<String>,
 }
 
@@ -201,7 +213,7 @@ fn parse_command(text: &str) -> Option<String> {
 }
 
 /// The chat is on the allow-list (numeric IDs; `@channel` entries never match a message sender).
-fn is_allowed(chat_ids: &[String], chat_id: i64) -> bool {
+pub(super) fn is_allowed(chat_ids: &[String], chat_id: i64) -> bool {
     let id = chat_id.to_string();
     chat_ids.iter().any(|c| c.trim() == id)
 }
@@ -211,7 +223,7 @@ fn is_stale(now: i64, sent: i64) -> bool {
 }
 
 async fn poll(http: &reqwest::Client, offset: Option<i64>) -> Result<Vec<Value>, ApiError> {
-    let mut body = json!({ "timeout": POLL_SECS, "allowed_updates": ["message"] });
+    let mut body = json!({ "timeout": POLL_SECS, "allowed_updates": ["message", "callback_query"] });
     if let Some(o) = offset {
         body["offset"] = json!(o);
     }
@@ -317,6 +329,10 @@ async fn set_menu(http: &reqwest::Client) {
 }
 
 async fn handle(state: &SharedState, http: &reqwest::Client, update: &Value) {
+    if let Some(query) = update.get("callback_query") {
+        control::handle_callback(state, http, query).await;
+        return;
+    }
     let Some(msg) = update.get("message").and_then(|m| serde_json::from_value::<Msg>(m.clone()).ok()) else {
         return;
     };
@@ -336,33 +352,44 @@ async fn handle(state: &SharedState, http: &reqwest::Client, update: &Value) {
         return;
     }
     let Some(command) = msg.text.as_deref().and_then(parse_command) else { return };
-    let card = answer(state, &command).await;
+    let buttons = control::controls_allowed(&cfg.telegram, msg.chat.id, &msg.chat.kind, msg.from.as_ref().map(|u| u.id));
+    let (card, keyboard) = answer(state, &command, buttons).await;
     let chat = msg.chat.id.to_string();
-    if let Err(e) = channels::telegram(http, &chat, &card.telegram_html(&ist_stamp()), &card.plain()).await {
+    let markup = control::markup(&keyboard);
+    if let Err(e) = channels::telegram_with(http, &chat, &card.telegram_html(&ist_stamp()), &card.plain(), markup.as_ref()).await {
         warn!("Telegram: could not answer /{command} in chat {chat}: {e}");
     }
 }
 
 // ---------------------------------------------------------------- commands ---
 
-async fn answer(state: &SharedState, command: &str) -> Card {
-    let result = match command {
-        "start" | "help" => Ok(help_card()),
-        "positions" | "pos" => positions_card(state).await,
-        "pnl" => pnl_card(state).await,
-        "algos" => algos_card(state).await,
-        "status" => status_card(state).await,
-        other => Ok(Card::new("❓", BLUE, "Help", "Unknown command").text(format!("/{other} is not a command. Send /help for the list."))),
+/// The reply card and, when control buttons are allowed here, its buttons.
+async fn answer(state: &SharedState, command: &str, buttons: bool) -> (Card, Keyboard) {
+    let result: anyhow::Result<(Card, Keyboard)> = match command {
+        "start" | "help" => Ok((help_card(buttons), Vec::new())),
+        "positions" | "pos" => positions_card(state, buttons).await,
+        "pnl" => pnl_card(state).await.map(|c| (c, Vec::new())),
+        "algos" => algos_card(state, buttons).await,
+        "status" => status_card(state).await.map(|c| (c, Vec::new())),
+        "control" => control::panel(state, buttons).await,
+        other => Ok((
+            Card::new("❓", BLUE, "Help", "Unknown command").text(format!("/{other} is not a command. Send /help for the list.")),
+            Vec::new(),
+        )),
     };
-    result.unwrap_or_else(|e| Card::new("⚠️", RED, "Error", "Could not read that").text(e.to_string()))
+    result.unwrap_or_else(|e| (Card::new("⚠️", RED, "Error", "Could not read that").text(e.to_string()), Vec::new()))
 }
 
-fn help_card() -> Card {
+fn help_card(buttons: bool) -> Card {
     let mut card = Card::new("🤖", BLUE, "Help", "KISSA commands");
     for (command, what) in MENU {
         card.add_text(format!("/{command} · {what}"));
     }
-    card.add_text("These commands only read; nothing here changes an order, an algo or a limit.");
+    card.add_text(if buttons {
+        "Buttons under /positions, /algos and /control can change things (exit, arm, kill switch). All but disarm ask for a second press."
+    } else {
+        "These commands only read; nothing here changes an order, an algo or a limit."
+    });
     card
 }
 
@@ -386,12 +413,12 @@ fn position_line(p: &Position) -> String {
     )
 }
 
-async fn positions_card(state: &SharedState) -> anyhow::Result<Card> {
+async fn positions_card(state: &SharedState, buttons: bool) -> anyhow::Result<(Card, Keyboard)> {
     let dash = state.trading.dashboard(None).await?;
     let mut card = Card::new("📋", BLUE, "Positions", "Open positions");
     if dash.positions.is_empty() {
         card.add_text("No open positions.");
-        return Ok(card);
+        return Ok((card, Vec::new()));
     }
     let total: f64 = dash.positions.iter().filter_map(|p| p.unrealised).sum();
     card.add_field("Open", dash.positions.len().to_string());
@@ -406,7 +433,8 @@ async fn positions_card(state: &SharedState) -> anyhow::Result<Card> {
             card.add_text(position_line(p));
         }
     }
-    Ok(card)
+    let keyboard = if buttons { control::position_buttons(&dash.positions) } else { Vec::new() };
+    Ok((card, keyboard))
 }
 
 async fn pnl_card(state: &SharedState) -> anyhow::Result<Card> {
@@ -433,12 +461,12 @@ async fn pnl_card(state: &SharedState) -> anyhow::Result<Card> {
     Ok(card)
 }
 
-async fn algos_card(state: &SharedState) -> anyhow::Result<Card> {
+async fn algos_card(state: &SharedState, buttons: bool) -> anyhow::Result<(Card, Keyboard)> {
     let views = crate::algo::service::list_views(&state.db).await?;
     let mut card = Card::new("🤖", TEAL, "Algos", "Algos");
     if views.is_empty() {
         card.add_text("No algos saved.");
-        return Ok(card);
+        return Ok((card, Vec::new()));
     }
     let armed = views.iter().filter(|v| v.armed).count();
     let in_position = views.iter().filter(|v| v.phase == crate::algo::PHASE_IN).count();
@@ -455,7 +483,8 @@ async fn algos_card(state: &SharedState) -> anyhow::Result<Card> {
             v.algo.interval
         ));
     }
-    Ok(card)
+    let keyboard = if buttons { control::algo_buttons(&views) } else { Vec::new() };
+    Ok((card, keyboard))
 }
 
 async fn status_card(state: &SharedState) -> anyhow::Result<Card> {
@@ -637,6 +666,23 @@ mod tests {
     }
 
     #[test]
+    fn help_tells_whether_buttons_can_change_things() {
+        assert!(help_card(false).plain().contains("only read"));
+        assert!(help_card(true).plain().contains("second press"));
+    }
+
+    #[test]
+    fn messages_carry_their_sender() {
+        let msg: Msg = serde_json::from_value(serde_json::json!({
+            "date": 5, "chat": { "id": 7, "type": "private" }, "from": { "id": 7, "is_bot": false }, "text": "/control"
+        }))
+        .unwrap();
+        assert_eq!(msg.from.map(|u| u.id), Some(7));
+        let anon: Msg = serde_json::from_value(serde_json::json!({ "date": 5, "chat": { "id": -9, "type": "channel" } })).unwrap();
+        assert!(anon.from.is_none());
+    }
+
+    #[test]
     fn uptime_text() {
         assert_eq!(uptime(40), "40s");
         assert_eq!(uptime(125), "2m");
@@ -645,7 +691,7 @@ mod tests {
 
     #[test]
     fn help_lists_every_menu_command() {
-        let plain = help_card().plain();
+        let plain = help_card(false).plain();
         for (command, _) in MENU {
             assert!(plain.contains(&format!("/{command}")), "{command}");
         }

@@ -692,6 +692,8 @@ export interface TelegramConfig {
   chatIds: string[];
   /** Listen for messages to the bot and answer the read-only commands in the chats above */
   listen: boolean;
+  /** Control buttons (arm / disarm, kill switch, exit) in the bot and on risk and algo alerts; needs `listen` */
+  controls: boolean;
 }
 
 export interface EmailConfig {
@@ -774,7 +776,7 @@ export interface AuditRow {
   at: string;
   category: AuditCategory;
   action: string;
-  actor: 'user' | 'system' | 'algo' | 'copier' | 'broker';
+  actor: 'user' | 'system' | 'algo' | 'copier' | 'broker' | 'telegram';
   accountId: string | null;
   accountName: string | null;
   /** An order id, algo id or setting key. */

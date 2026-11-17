@@ -25,6 +25,10 @@ pub struct TelegramConfig {
     /// (`/positions`, `/pnl`, ...) in the chats above. Off by default: it keeps
     /// a connection to Telegram open while the app runs.
     pub listen: bool,
+    /// Add control buttons (arm / disarm, kill switch, exit) to bot replies and
+    /// to risk and algo alerts. Needs `listen`; works only in private chats
+    /// on the list above. Off by default.
+    pub controls: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -121,6 +125,8 @@ impl AlertConfig {
     /// Trim whitespace and drop blank / duplicate list entries.
     pub fn normalise(&mut self) {
         clean_list(&mut self.telegram.chat_ids);
+        // Buttons arrive through the listener, so they cannot be on without it.
+        self.telegram.controls = self.telegram.controls && self.telegram.listen;
         clean_list(&mut self.email.to);
         self.email.host = self.email.host.trim().to_string();
         self.email.username = self.email.username.trim().to_string();
@@ -274,5 +280,20 @@ mod tests {
         assert_eq!(c.telegram.chat_ids, vec!["1", "2"]);
         assert!(c.events.is_empty());
         assert_eq!(c.email.security, "tls");
+    }
+
+    #[test]
+    fn control_buttons_default_off_and_need_the_listener() {
+        assert!(!AlertConfig::default().telegram.controls);
+        let mut c = AlertConfig::default();
+        c.telegram.controls = true;
+        c.normalise();
+        assert!(!c.telegram.controls, "no listener, no buttons");
+        c.telegram.listen = true;
+        c.telegram.controls = true;
+        c.normalise();
+        assert!(c.telegram.controls);
+        let old: AlertConfig = serde_json::from_str(r#"{"telegram":{"enabled":true,"listen":true}}"#).unwrap();
+        assert!(!old.telegram.controls, "settings saved before this option stay off");
     }
 }

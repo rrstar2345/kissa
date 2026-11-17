@@ -238,9 +238,24 @@
         <span class="flex flex-col">
           <span class="text-sm font-medium">Answer commands</span>
           <span class="text-xs text-base-content/60">
-            /positions, /pnl, /algos, /status and /help, in the chats above only. They only read: nothing can be
-            changed from Telegram. Anyone in those chats can see your positions and P&amp;L, and the app keeps a
-            connection to Telegram open while it runs.
+            /positions, /pnl, /algos, /status, /control and /help, in the chats above only. On their own they only
+            read. Anyone in those chats can see your positions and P&amp;L, and the app keeps a connection to
+            Telegram open while it runs.
+          </span>
+        </span>
+      </label>
+      <label class="flex cursor-pointer items-start gap-3 {cfg.telegram.listen ? '' : 'opacity-50'}">
+        <input type="checkbox" class="toggle toggle-sm toggle-warning mt-0.5" bind:checked={cfg.telegram.controls}
+          disabled={!cfg.telegram.listen} />
+        <span class="flex flex-col">
+          <span class="text-sm font-medium">Allow control buttons</span>
+          <span class="text-xs text-base-content/60">
+            Adds buttons that can arm or disarm an algo, switch the kill switch on or off, lift a loss halt and exit
+            positions: under /positions, /algos and /control, and on risk and algo alerts. They work only in a
+            private chat from the list above (not in groups or channels). Everything except disarm asks for a second
+            press that works once and expires after 30 seconds. Each action goes through the normal order checks and
+            risk limits and is written to the Journal as “telegram”. Anyone with access to that Telegram account can
+            trade, so keep it locked.
           </span>
         </span>
       </label>

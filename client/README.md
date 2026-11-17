@@ -2,65 +2,64 @@
 
 A desktop app for stock and options traders, built with **Tauri v2** (Rust) and **SvelteKit + Tailwind CSS v4 + DaisyUI**.
 
-KISSA streams option prices, lets you place orders through your own [`broker-proxy`](../broker-proxy) (a static-IP Go server), and keeps every credential, order and account detail **on your machine**.
+KISSA streams option prices, draws charts with signals, runs algos and backtests, and places orders through your own [`broker-proxy`](../broker-proxy) (a static-IP Go server), while keeping every credential, order and account detail **on your machine**. It is hardened with paper trading first; live brokers (Dhan, Fyers) are implemented but not yet validated against the real services.
 
-Project status, the roadmap and design notes are kept in [`CLAUDE.md`](../CLAUDE.md).
+Project handoff notes (architecture, gotchas, unverified items, known gaps) are in [`CLAUDE.md`](../CLAUDE.md).
 
-## Data sources
+## Features
 
-- **NSE (default)** – public NSE endpoints and WebSocket streams, no credentials. Ported from `kstocks_egui`: browser-style cookie warm-up, NSE-synced IST market clock (Active/Idle session mode), F&O symbol/expiry resolution. NSE streams ticks only during market hours (≈ 9:00–15:30 IST, Mon–Fri).
-- **Fyers (optional)** – your own API app ID + secret ID (create the app in the Fyers API dashboard, with a redirect URL; the secret is stored in the OS keychain). Use **Log in** on the account: it opens the Fyers login and the app generates the access token for you (the redirect is caught automatically on a `http://127.0.0.1:<port>/` redirect URL, or you can paste back the code or URL you land on). The chain is polled (default every 5 s) from the Fyers v3 [Option Chain API](https://fyers.in/api-docs/v3/api/market-data/option-chain/) with `greeks=1`, so it also works after hours. Fyers access tokens expire daily (6:30 AM); click **Log in** again under **Accounts** each trading day.
+### Market data
+- **NSE (default)**: public NSE endpoints and WebSocket streams, no credentials. Streams ticks only during market hours (about 9:00-15:30 IST, Mon-Fri), so the chain is empty outside them.
+- **Fyers (optional)**: your own API app ID + secret (the secret goes to the OS keychain). **Log in** on the account opens the Fyers login and the app creates the access token (the redirect is caught on `http://127.0.0.1:<port>/`, or paste the code or URL). Live prices come over one shared Fyers data socket, with REST seeding and fallback, so the chain also works after hours. Tokens expire daily at 6:30 AM; the header shows a red "Log in" badge when needed. Every Fyers call is rate limited to your plan (Standard or Prime) with a usage card on the Settings page and an "API error / Rate limited" indicator.
+- Choose the source on the Option Chain page or under **Accounts > Market data source**. Only the selected source is polled. The header shows its market status and a live-feed indicator.
+- **Option chain**: configurable columns, live ticks, OI change, IV and Greeks (from Fyers; for NSE computed in Rust with Black-76, forward from put-call parity, r = `risk_free_rate`, theta per calendar day, vega per vol point). Click a bid, ask or LTP to open the order ticket.
 
-Choose the source on the Option Chain page or under **Accounts → Market data source**.
+### Charts, signals, backtests
+- Live ticks fold into 1-minute bars (indices, plus option strikes around ATM on the chain being streamed and every held contract), stored in `bars.duckdb`. Only 09:15-15:30 IST is recorded; finished days roll up to daily bars, and old 1m bars and expired options are purged on schedule (`charts.*` settings). 3m-60m intervals are resampled on read, aligned to 09:15 IST.
+- Indicators: SMA, EMA, RSI, MACD, Bollinger, VWAP, Supertrend, with automatic signals (MA cross, MACD cross, RSI 30/70, Bollinger re-entry, Supertrend flip). Fyers backfill fills gaps per chart without overwriting stored bars. Layout is saved per window.
+- **Signals** page: build rule sets (variables plus entry / exit condition trees) and attach them to chart panels. Rules use closed candles only.
+- **Backtest**: run one saved signal on one instrument over stored bars (fills at the next bar's open, long only).
 
-### Charts
+### Orders and trading
+- **Order ticket**: LIMIT and STOP_LOSS only (the proxy rejects market orders), DAY / IOC, quantity in lots, price in 0.05 ticks, live LTP with a **Use** button. Accounts are **Paper** (executed locally) or **Dhan** (via your broker-proxy).
+- **Paper broker**: fills priced from live ticks (stop-limit for STOP_LOSS), optional slippage and latency, bracket / OCO orders, rough margin check (`startingCapital`, `short_margin_pct`), auto square-off of INTRADAY positions at 15:20 IST, expiry settlement. Orders are rejected outside market hours unless `trading.paper_allow_off_hours` is set.
+- **Dhan**: one proxy session per account, live updates over the proxy WebSocket with replay, de-duplication by `correlationId`, a 60 s order-book resync, and instrument ids from Dhan's public CSV (**Refresh instruments** in the ticket if a contract is missing).
+- **Order gate**: no order or modify is accepted unless the server under **Settings > Server connection** accepts your API key (checked on every order; cancel is not gated). For development run the proxy locally (`http://localhost:<port>` is allowed) with a key from `proxy keygen`.
+- **Exit / Exit all**: cancels the contract's open orders, then places a LIMIT at the LTP pushed `trading.exit_buffer_ticks` ticks against you. Both ask for confirmation.
+- **Orders page**: orders (cancel / modify), trades and positions by account and date. The Trades tab toggles **Round trips** (default; entry and exit as one trade, listed on the day it closes) and **Fills**. Positions are derived from trades (average cost); charges are an estimate per fill (brokerage, STT, exchange, SEBI, stamp duty, GST).
+- **Risk controls**: per-account limits and daily-loss halt, plus a kill switch. Orders that only reduce a position always pass, so exits are never blocked.
+- **Trade copier**: one master account, any number of child accounts (use them only for copying).
+- **Algos**: option algos driven by one saved signal; each CE / PE leg is judged on its own option bars; one capital pool per account; paper brackets or watched SL / target; BUY only; Dhan needs "Allow live accounts". Algos run only while the app is running (desktop or headless).
 
-- **Storage**: live ticks are folded in memory into 1-minute bars (index ticks, plus option strikes within ±`charts.persist_strikes_each_side` of ATM for the chain being streamed) and flushed to the `bars` table every few seconds. Only 09:15–15:30 IST is recorded. Finished days roll up to daily bars; 1m bars are kept `charts.bars_1m_keep_days` days, expired options are purged after `charts.option_expiry_grace_days`. Other intervals (3m–60m) are resampled on read, aligned to 09:15 IST.
-- **Indicators** (computed in Rust): SMA, EMA, RSI, MACD, Bollinger, VWAP, Supertrend. Signals: fast/slow MA cross (when two of the same kind are enabled), MACD cross, RSI leaving 30/70, Bollinger re-entry, Supertrend flip. Index bars have no volume, so VWAP there is the running typical-price mean.
-- **Backfill** (Fyers, per chart): fills 1m or daily gaps and never overwrites stored bars. Uses `fyers.history_url` from `settings.json` (unverified against the live API). Expired option contracts normally have no history.
-- Chart layout (panels, intervals, indicators) is saved in the `charts.layout` setting.
+### Dashboard and records
+- **Dashboard**: Daily / Monthly / Yearly views with cards (net and gross P&L, trades, charges, ROI), a calendar heat map, a trader's diary and open positions. Realised P&L and charges belong to the IST hour / day / month of the fill; a trade is a round trip counted when it closes; ROI = net / entry premium. The top bar shows today's net P&L and a positions dock appears on the chain and chart pages.
+- **CSV export** (Orders page and Dashboard): Orders, Trades or Trader's diary for an IST date range and account, saved through your system's dialog (text that could start a spreadsheet formula gets a leading `'`).
+- **Journal**: an audit trail of orders, risk, algos, copier, accounts, settings and system events (who did it: user, system, algo, copier, broker or Telegram), kept 90 days.
+- **Backup**: **Settings > Database backup** writes a timestamped folder with `kissa.db` and `bars.duckdb` while the app runs. Keychain secrets are not included. To restore, copy the files back with the app closed.
 
-### Orders and dashboard
+### Alerts and Telegram
+- **Alerts page**: Telegram and email notifications for fills, rejections, risk halts, connection loss, token expiry, copier and algo events, data API problems and a daily P&L summary, each switchable, with de-duplication, retries and a history.
+- **Telegram bot**: "Detect chat ID" finds your chat. With **Answer commands** on, allow-listed chats can send `/positions`, `/pnl`, `/algos`, `/status`, `/control` and `/help` (read-only).
+- **Control buttons** (**Allow control buttons**, off by default): arm / disarm an algo, kill switch on / off, lift a loss halt, exit one position, exit all, under `/positions`, `/algos`, `/control` and on risk and algo alerts. They work only in a private chat from your list. Everything except disarm needs a second press that works once and expires after 30 seconds; actions go through the normal order checks and risk limits and are written to the Journal as "telegram". Anyone with access to that Telegram account can trade, so keep it locked.
 
-- **Placing orders**: click a bid, ask or LTP on the option chain to open the order ticket (ask/LTP prefill BUY, bid prefills SELL). LIMIT and STOP_LOSS only (the proxy rejects market orders), DAY/IOC validity, quantity in lots, price in ₹0.05 ticks. Accounts: **Paper** (executed locally) or **Dhan** (via your broker-proxy).
-- **Broker interface**: paper and Dhan sit behind one `Broker` trait (`trading/broker/`), so every order takes the same path (validation, server gate, broker, ledger). Adding a broker means adding a folder under `trading/broker/` and registering it in `TradingService::new`.
-- **Paper broker**: fills are priced from live ticks (LIMIT; STOP_LOSS is stop-limit), with optional slippage (`trading.paper.slippage_ticks`) and acknowledgement latency (`latency_ms`). Orders are rejected outside 09:15–15:30 IST Mon–Fri unless `trading.paper_allow_off_hours` is true. Brokerage comes from the account's `brokeragePerOrder`.
-- **Paper margin check**: needs `startingCapital` on the paper account (otherwise no limit). Cash = starting capital + realised P&L − charges. A long blocks its premium, a short blocks `short_margin_pct` % of strike × quantity, and pending orders reserve what they would block (the part that closes a position needs nothing). An order is rejected if it exceeds what is available. This is a rough estimate, not SPAN.
-- **Paper auto square-off**: at `paper.square_off_time` (15:20 IST) open INTRADAY orders are cancelled and INTRADAY positions closed at the last price (with slippage); new INTRADAY orders are refused from then on. It also runs at start-up for positions left open by an earlier session. Disabled by `paper.auto_square_off: false` or `paper_allow_off_hours: true`. Live brokers do their own square-off.
-- **Dhan**: one proxy session per account; live updates over the proxy WebSocket with `since` replay, orders de-duplicated by `correlationId`, and a periodic order-book resync. The contract's Dhan `securityId` comes from Dhan's public instrument CSV, cached in SQLite and refreshed daily (**Refresh instruments** in the ticket if a contract is missing).
-- **Ledger**: `orders` and `trades` tables in `kissa.db`. Positions are derived from trades (average cost) and are not stored. Charges are an estimate per fill: flat brokerage per order, STT, exchange fee, SEBI, stamp duty and GST.
-- **Prices**: a shared store fed by the chain engines, plus an automatic background stream for any symbol/expiry that has open positions or pending paper orders.
-- **Orders page**: orders (cancel/modify), trades and positions, filtered by account and date; Dhan connection state and **Sync orders**. The **Trades** tab has a `Fills | Round trips` toggle (default **Round trips**): a round trip is entry and exit shown as one trade, listed on the day it closed (open trades show their entry only); **Fills** lists every execution. Round trips are counted exactly like the Dashboard.
-- **CSV export**: **Export CSV** on the Orders page and the Dashboard opens a dialog: choose **Orders**, **Trades** (fills) or **Trader's diary** (one row per round trip), an IST From / To range (presets: Today, This month, Last month, This year) and an account, then **Save as…** opens your system's save dialog. Dates and times are IST, rows are oldest first with no row limit, and each export is noted in the journal. Text such as account names is prefixed with `'` if it would otherwise start a spreadsheet formula (`=`, `+`, `-`, `@`).
-- **Dashboard**: a `Daily | Monthly | Yearly` toggle (default Monthly), a period picker and an accounts filter drive everything below.
-  - **Cards**: Net P&L, Gross P&L, Trades, Total charges and ROI for the period (Daily = the day, Monthly = the month, Yearly = the 12 months ending at the selected month).
-  - **Calendar heat view**: columns of the last 4 days (one cell per hour), the last 4 months (calendar, one cell per day) or the last 12 months (calendar, coloured cells only), each with a net P&L pill. Green = net profit, red = net loss, yellow = net zero, grey = no activity.
-  - **Trader's diary**: grouped by hour, day or month to match the view; expand a group to see its trades (entry and exit of each).
-  - **Open positions** with live/last/none LTP badge (follows the accounts filter).
-  - **How it is counted**: realised P&L and charges belong to the IST hour/day/month of the fill that booked them; open positions (unrealised) are not included. A **trade** is entry + exit (a round trip, counted when it closes). **ROI** = net P&L / entry premium (price x qty of the fills that opened or added to a position).
-- **Exit / Exit all**: open positions have an **Exit** button, and Orders and Dashboard have **Exit all** (all accounts, or the selected one). The backend first cancels open orders on the contract (so a resting stop cannot reopen it), then places a LIMIT for the full quantity on the opposite side at the LTP pushed `trading.exit_buffer_ticks` (default 2) ticks against you, same product, DAY. Both ask for confirmation; Exit all lists any position it could not exit. Exit is disabled when there is no LTP.
-- **Order ticket**: shows the contract's live LTP (updated every second, live/last badge) with a **Use** button to copy it into the price.
-- **Server authentication (order gate)**: no order (paper or Dhan), and no modify, is accepted unless the server in `server` (see Configuration) accepts the API key. The key is checked on every order using a cached `paper` session on the proxy (`GET /v1/orders`), so a revoked or wrong key is caught immediately. Cancel is not gated. The proxy must therefore be reachable even for paper trading; for development run it locally (`http://localhost:<port>` is allowed) with a key from `proxy keygen`.
-- If an `orders` or `trades` table with an older layout exists, it is renamed to `<table>_legacy_<timestamp>` at startup rather than deleted.
+### Headless mode
+`kissa --headless` (or `KISSA_HEADLESS=1`) runs the same backend with no window, for a server or VM: algos, recorder, alerts and the Telegram bot keep working. Options: `--control-port N` (default 8787), `--no-control`, `--show-control-token`. A loopback HTTP control API (bearer token) offers status, arm / disarm, kill / resume, the daily Fyers re-login and shutdown (see `src-tauri/src/headless/control.rs`). Logs go to `kissa-headless.log`; only one instance can use a data folder. On Linux the window toolkit still needs GTK libraries and a display (Xvfb). Servers without a keychain use the encrypted file `secrets.enc` (`KISSA_SECRETS=file`, passphrase in `KISSA_PASSPHRASE`): prepare it on the desktop, then copy the whole data folder to the server.
 
-### Greeks
-
-Fyers supplies IV/Greeks. For NSE they are computed in Rust from LTP: Black-76 priced off a forward derived from put-call parity at ATM (no dividend assumption), r = 7% (`risk_free_rate`), time measured to 15:30 IST on expiry. Theta is per calendar day, vega per 1 vol point. NSE's stream may not include OI change, so *OI Chg* is measured from the first OI seen in the session unless NSE provides it.
+### Windows
+Any page can open in its own window (up to 8 pop-outs); they share one backend and are restored on start.
 
 ## Security model
-
-- **Secrets** (Dhan access token, proxy API key, the server API key from Settings, Fyers token) are stored **only in the OS keychain** (macOS Keychain, Windows Credential Manager, Secret Service on Linux). They are never written to SQLite or `settings.json`, and the UI never receives them back.
-- **SQLite** (`kissa.db`) holds non-secret account fields, preferences (columns, theme, symbol), the order log, trades and bars.
-- **Proxy URL must be `https://`** (plain `http://` is accepted for `localhost` only). The proxy keeps credentials in memory per session and persists nothing; the client is the system of record.
-- Data lives in `<local data dir>/.kissa/` (`kissa.db`, `settings.json`).
+- **Secrets** (Dhan token, proxy and server API keys, Fyers token and app secret, Telegram bot token, SMTP password) live **only in the OS keychain** (or the encrypted `secrets.enc` file in headless mode). They are never written to SQLite or `settings.json`, and the UI never receives them back.
+- **SQLite** (`kissa.db`) holds non-secret account fields, preferences, orders, trades, risk, algos, alerts and the journal. **DuckDB** (`bars.duckdb`) holds chart bars.
+- The **proxy URL must be `https://`** (plain `http://` only for localhost). The proxy keeps credentials in memory per session and stores nothing; the client is the system of record.
+- The window loads nothing remote and makes no network calls itself (a strict CSP); all network access happens in Rust.
+- Data lives in `<local data dir>/.kissa/`.
 
 ## Broker-proxy
-
-The order gate uses the server set under **Settings → Server connection**. Dhan accounts link to a proxy configured under **Accounts → Broker-proxy** (URL, API key from `proxy keygen`, whitelisted static IP for reference). Both can point at the same server. **Test** checks `/healthz`, then opens and closes a `paper` session to validate the API key. A **Dhan** account links to a proxy and **Test** opens and closes a real Dhan session through it. See the [broker-proxy README](../broker-proxy/README.md) for the API contract.
+The order gate uses the server under **Settings > Server connection**. Dhan accounts link to a proxy under **Accounts > Broker-proxy** (URL, API key from `proxy keygen`, whitelisted static IP for reference); both can point at the same server. **Test** checks `/healthz` and opens and closes a session to validate the key. See the [broker-proxy README](../broker-proxy/README.md) for the API contract.
 
 ## Development
-
-Prerequisites: Rust (the SQLx 0.9 dependency needs **1.94+**), Node 20+, pnpm, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. On Linux also install `libdbus-1-dev` (keychain) and OpenSSL headers.
+Prerequisites: Rust **1.94+** (SQLx 0.9), a C++ toolchain (DuckDB is built from source on the first build, which is slow), Node 20+, pnpm, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS. On Linux also install `libdbus-1-dev` (keychain) and OpenSSL headers.
 
 ```bash
 pnpm install
@@ -71,29 +70,27 @@ pnpm tauri build    # release bundle
 ```
 
 ### Configuration
+The **Settings** page edits `settings.json` and the **Server connection** (URL, port, API key in the keychain; https required except localhost). These apply immediately: `trading.*` (except `request_timeout_secs`), `risk_free_rate` and `server`. Other sections (`system`, `market_runtime`, `fyers`, `charts`, `trading.request_timeout_secs`) are read at startup, and the page lists saved changes that still need a restart. Edits made to the file outside the app apply at the next start.
 
-**Settings page**: edit `settings.json` in the app, and set the **Server connection** (URL, port, API key). URL and port are stored in `settings.json` under `server` (`url`, `port`; https required except localhost; the port is appended unless the URL has one). The API key is stored in the OS keychain, not in the file. Server changes apply immediately; other settings are read at startup, so restart the app after changing them.
-
-`settings.json` is created on first run and may also be edited while the app is closed: NSE endpoints, reconnect/idle-poll timings, `risk_free_rate`, Fyers (`chain_url`, `poll_secs`, `strike_count`) and `trading`: `paper_allow_off_hours`, `exit_buffer_ticks` (2), `paper` (`enforce_margin`, `short_margin_pct` 10, `slippage_ticks` 0, `latency_ms` 0, `auto_square_off`, `square_off_time` "15:20"), `dhan_brokerage_per_order` (20), `dhan_brokerage_cap_pct`, `scrip_master_url`, `scrip_refresh_hours`, `request_timeout_secs`, `fallback_lot_sizes` (used only when Dhan's list has no entry) and `charges` (STT, exchange, SEBI, stamp duty, GST rates; verify against current rates).
+`settings.json` is created on first run. Main sections: NSE endpoints and timings; `risk_free_rate`; `fyers` (plan `standard` / `prime`, optional `limits`, `use_socket`, `socket_url`, `max_symbols`, `chain_refresh_secs`, URLs); `charts` (storage and retention); `trading` (`paper_allow_off_hours`, `exit_buffer_ticks`, `paper.*` such as `enforce_margin`, `short_margin_pct`, `slippage_ticks`, `latency_ms`, `auto_square_off`, `square_off_time`, Dhan brokerage, `fallback_lot_sizes`, and `charges` rates; verify the rates against current ones). Lot sizes and strike steps built into the app are estimates; check them.
 
 ## Layout
-
 ```
 src/                     SvelteKit SPA (Svelte 5 runes)
   app.css                Tailwind + DaisyUI themes and all custom styling
-  lib/columns.ts         option-chain column definitions
-  lib/components/        ChainTable, ColumnPicker, AccountForm, OrderTicket, ChartPanel, ExitButton, ExitAllButton, ExportCsv
-  lib/trading.svelte.ts  order-update / broker-status listeners, status helpers
-  routes/                dashboard, chain, charts, orders, accounts, settings
+  lib/                   api, types, columns, stores (trading, quotes, market), components/
+  routes/                accounts, alerts, signals, algos, backtest, chain, charts, copier, journal, orders, risk, settings, signals
 src-tauri/src/
-  market/                NSE http client, clock, symbols, WSS streamers (from kstocks_egui)
+  alerts/                alert service, rendering, Telegram bot (bot.rs) and control buttons (control.rs)
+  algo/                  algo runner
+  audit/                 journal
+  backtest/              backtesting
   chain/                 chain model, engine, Black-76 greeks, Fyers client, runner
-  charts/                bar recorder, store, indicators, backfill
-  trading/               broker-independent order flow and the ledger
-    broker/              Broker trait + registry; paper/ (matching, funds, book) and dhan/ (adapter + proxy client)
-    service/             orders (place/modify/cancel), exit, squareoff, views (dashboard/quotes)
-    store.rs pricing.rs charges.rs ltp.rs feed.rs scrip.rs server.rs  (SQLite ledger, tick maths, costs, prices, instruments, order gate)
-    period.rs            dashboard aggregation: round-trip trades, cards, calendar heat view, grouped diary
-    export.rs            CSV builders for orders, trades and the diary (saved via the native dialog, tauri-plugin-dialog)
-  accounts.rs secrets.rs db.rs settings.rs commands.rs
+  charts/                recorder, DuckDB bar store, resampling, indicators, backfill, rules/ (signals engine)
+  headless/              headless mode and control API
+  market/                NSE client, clock, status, streamers, Fyers REST wrapper (fyers_api) and data socket (fyers_socket)
+  trading/               order flow, ledger, risk, copier, period (dashboard), export (CSV)
+    broker/              Broker trait + registry; paper/ and dhan/
+    service/             orders, exit, square-off, risk, alerts hooks, views
+  accounts.rs backup.rs commands.rs db.rs emit_stats.rs lib.rs main.rs popout.rs secrets.rs settings.rs state.rs stats.rs
 ```

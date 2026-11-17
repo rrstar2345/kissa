@@ -20,6 +20,7 @@ use tauri::Emitter;
 use tracing::{info, warn};
 
 use super::TradingService;
+use crate::alerts::control as buttons;
 use crate::audit::{self, Category, Entry};
 use crate::accounts::{self, Account};
 use crate::market::market_clock;
@@ -212,6 +213,7 @@ impl TradingService {
             format!(
                 "{reason}. {cancelled} entry order(s) cancelled, {exited} exit order(s) placed. New positions are blocked until tomorrow."
             ),
+            vec![vec![buttons::btn_resume(&a.id, &a.name)]],
         );
     }
 
@@ -314,7 +316,7 @@ impl TradingService {
             risk::clear_halt(&self.pool, GLOBAL).await?;
             info!("Risk: kill switch released");
             self.emit_risk();
-            self.alert_risk("Kill switch released".into(), "Trading is allowed again.".into());
+            self.alert_risk("Kill switch released".into(), "Trading is allowed again.".into(), Vec::new());
             audit::record(Entry::new(Category::Risk, "kill_switch_off", "Kill switch released: trading is allowed again").subject("kill_switch"));
             return Ok(out);
         }
@@ -357,6 +359,7 @@ impl TradingService {
                 out.cancelled,
                 if flatten { format!(", {} exit order(s) placed", out.placed) } else { String::new() }
             ),
+            if flatten { vec![vec![buttons::btn_kill_off()]] } else { vec![vec![buttons::btn_kill_off()], vec![buttons::btn_exit_all()]] },
         );
         Ok(out)
     }

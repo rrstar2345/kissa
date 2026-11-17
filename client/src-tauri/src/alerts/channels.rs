@@ -115,26 +115,47 @@ fn bad_markup(e: &ApiError) -> bool {
     e.code == 400 && e.message.contains("parse entities")
 }
 
-/// Send `html` (Telegram HTML). If Telegram rejects the markup the message is
-/// sent again as `plain` text, so an alert is never lost to a formatting problem.
-pub async fn telegram(http: &reqwest::Client, chat_id: &str, html: &str, plain: &str) -> Result<(), String> {
-    let first = api_call(
-        http,
-        "sendMessage",
-        &json!({ "chat_id": chat_id, "text": html, "parse_mode": "HTML", "disable_web_page_preview": true }),
-    )
-    .await;
-    match first {
+/// Send `html` (Telegram HTML), optionally with an inline keyboard (`reply_markup`)
+/// under the message. If Telegram rejects the markup the message is sent again as
+/// `plain` text, so an alert is never lost to a formatting problem.
+pub async fn telegram_with(
+    http: &reqwest::Client,
+    chat_id: &str,
+    html: &str,
+    plain: &str,
+    reply_markup: Option<&Value>,
+) -> Result<(), String> {
+    let mut rich = json!({ "chat_id": chat_id, "text": html, "parse_mode": "HTML", "disable_web_page_preview": true });
+    let mut fallback = json!({ "chat_id": chat_id, "text": truncate(plain, TELEGRAM_PLAIN_MAX), "disable_web_page_preview": true });
+    if let Some(markup) = reply_markup {
+        rich["reply_markup"] = markup.clone();
+        fallback["reply_markup"] = markup.clone();
+    }
+    match api_call(http, "sendMessage", &rich).await {
         Ok(_) => Ok(()),
-        Err(e) if bad_markup(&e) => api_call(
-            http,
-            "sendMessage",
-            &json!({ "chat_id": chat_id, "text": truncate(plain, TELEGRAM_PLAIN_MAX), "disable_web_page_preview": true }),
-        )
-        .await
-        .map(|_| ())
-        .map_err(|e| e.describe()),
+        Err(e) if bad_markup(&e) => api_call(http, "sendMessage", &fallback).await.map(|_| ()).map_err(|e| e.describe()),
         Err(e) => Err(e.describe()),
+    }
+}
+
+/// Replace the text of a message the bot sent. Omitting `reply_markup` removes
+/// its buttons, so a used confirmation cannot be pressed again.
+pub async fn edit_message(http: &reqwest::Client, chat_id: &str, message_id: i64, html: &str, plain: &str) -> Result<(), String> {
+    let rich = json!({ "chat_id": chat_id, "message_id": message_id, "text": html, "parse_mode": "HTML", "disable_web_page_preview": true });
+    let fallback = json!({ "chat_id": chat_id, "message_id": message_id, "text": truncate(plain, TELEGRAM_PLAIN_MAX), "disable_web_page_preview": true });
+    match api_call(http, "editMessageText", &rich).await {
+        Ok(_) => Ok(()),
+        Err(e) if bad_markup(&e) => api_call(http, "editMessageText", &fallback).await.map(|_| ()).map_err(|e| e.describe()),
+        Err(e) => Err(e.describe()),
+    }
+}
+
+/// Answer a button press (stops the spinner on the button). `alert` shows the
+/// text as a pop-up instead of a short notice. Best effort.
+pub async fn answer_callback(http: &reqwest::Client, query_id: &str, text: &str, alert: bool) {
+    let body = json!({ "callback_query_id": query_id, "text": truncate(text, 190), "show_alert": alert });
+    if let Err(e) = api_call(http, "answerCallbackQuery", &body).await {
+        tracing::debug!("Telegram: could not answer a button press: {}", e.describe());
     }
 }
 

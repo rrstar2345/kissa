@@ -9,6 +9,7 @@ use tracing::warn;
 
 use super::TradingService;
 use crate::accounts;
+use crate::alerts::control::Keyboard;
 use crate::alerts::render::rupees;
 use crate::alerts::{token_phase, Alert, Kind, TokenPhase};
 use crate::db;
@@ -74,8 +75,10 @@ impl TradingService {
 
     /// Risk events are rare and always worth hearing about: the key is unique
     /// so the de-dup window never hides one.
-    pub(super) fn alert_risk(&self, title: String, body: String) {
-        self.alerts.notify(Alert::new(Kind::Risk, now_ts(), title, body));
+    /// `buttons` are the Telegram control buttons that fit the event (they are
+    /// sent only when control buttons are switched on).
+    pub(super) fn alert_risk(&self, title: String, body: String, buttons: Keyboard) {
+        self.alerts.notify(Alert::new(Kind::Risk, now_ts(), title, body).buttons(buttons));
     }
 
     // ------------------------------------------------------------ scheduled ---

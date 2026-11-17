@@ -38,6 +38,7 @@ use super::{
 };
 use super::store;
 use crate::accounts;
+use crate::alerts::control::{self as buttons, Keyboard};
 use crate::alerts::{Alert, Kind};
 use crate::audit::{self, Actor};
 use crate::charts::instrument::{index_key, option_key};
@@ -171,7 +172,12 @@ impl Runner {
     }
 
     fn notify(&self, key: String, title: String, body: String) {
-        self.state.alerts.notify(Alert::new(Kind::Algo, key, title, body));
+        self.notify_with(key, title, body, Vec::new());
+    }
+
+    /// As `notify`, with Telegram control buttons (sent only when they are switched on).
+    fn notify_with(&self, key: String, title: String, body: String, keyboard: Keyboard) {
+        self.state.alerts.notify(Alert::new(Kind::Algo, key, title, body).buttons(keyboard));
     }
 
     async fn acct_name(&self, id: &str) -> String {
@@ -297,10 +303,11 @@ impl Runner {
                     .subject(algo.id.clone())
                     .detail(serde_json::json!({ "reason": reason, "automatic": true })),
                 );
-                self.notify(
+                self.notify_with(
                     format!("{}:disarm:{}", algo.id, today_ist()),
                     format!("Algo disarmed: {}", algo.name),
                     format!("{reason}. An open position (if any) is still managed. Arm the algo again when trading may resume."),
+                    vec![vec![buttons::btn_arm(&algo.id, &algo.name)]],
                 );
             }
         }
@@ -628,10 +635,11 @@ impl Runner {
         st.phase = PHASE_IN.to_string();
         st.entry_bar_ts = bar_ts;
         store::set_position(&pool, &algo.id, PHASE_IN, &st.legs, bar_ts).await?;
-        self.notify(
+        self.notify_with(
             format!("{}:entry:{bar_ts}:{ce_pe}", algo.id),
             format!("Algo entered: {}", algo.name),
             format!("{}\n{}", summary.join("\n"), if failures > 0 { format!("{failures} account(s) skipped or failed.") } else { String::new() }),
+            vec![vec![buttons::btn_disarm(&algo.id, &algo.name)], vec![buttons::btn_exit_all()]],
         );
         Ok(())
     }
@@ -766,10 +774,11 @@ impl Runner {
                 let m = e.to_string();
                 if !(m.contains("no open position") || m.contains("already closed")) {
                     self.log(algo, "error", "error", &format!("Could not exit {} on {name} ({reason}): {m}", leg_label(leg))).await;
-                    self.notify(
+                    self.notify_with(
                         format!("{}:exit-failed:{}:{}", algo.id, leg.order_id, Utc::now().timestamp() / 60),
                         format!("Algo could not exit: {}", algo.name),
                         format!("{} on {name}: {m}. Close it manually if needed.", leg_label(leg)),
+                        vec![vec![buttons::btn_exit_all()]],
                     );
                 }
                 false

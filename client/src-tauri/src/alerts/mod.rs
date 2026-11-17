@@ -14,11 +14,14 @@
 //! An alert is a title, optional label / value `fields` and free text. The
 //! `render` module turns it into Telegram HTML, email HTML and plain text, so
 //! every event looks the same on every channel. `bot` is the Telegram side
-//! that listens (chat ID detection, read-only commands).
+//! that listens (chat ID detection, read-only commands); `control` adds the
+//! optional control buttons (arm / disarm, kill switch, exit) with a
+//! confirmation step.
 
 pub mod bot;
 pub mod channels;
 pub mod config;
+pub mod control;
 pub mod render;
 pub mod store;
 
@@ -173,11 +176,13 @@ pub struct Alert {
     pub fields: Vec<(String, String)>,
     /// Replaces the event's usual symbol, e.g. a target hit.
     pub icon: Option<&'static str>,
+    /// Control buttons for Telegram (only sent when control buttons are on).
+    pub buttons: control::Keyboard,
 }
 
 impl Alert {
     pub fn new(kind: Kind, key: impl Into<String>, title: impl Into<String>, body: impl Into<String>) -> Self {
-        Self { kind, key: key.into(), title: title.into(), body: body.into(), fields: Vec::new(), icon: None }
+        Self { kind, key: key.into(), title: title.into(), body: body.into(), fields: Vec::new(), icon: None, buttons: Vec::new() }
     }
 
     /// Add a label / value row.
@@ -188,6 +193,12 @@ impl Alert {
 
     pub fn icon(mut self, icon: &'static str) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Rows of control buttons shown under the Telegram message.
+    pub fn buttons(mut self, rows: control::Keyboard) -> Self {
+        self.buttons = rows;
         self
     }
 
@@ -316,6 +327,11 @@ impl AlertService {
         let _ = self.app.emit("alert-update", true);
     }
 
+    /// Tell the windows something changed (used by the Telegram controls).
+    pub fn emit_event(&self, name: &str) {
+        let _ = self.app.emit(name, true);
+    }
+
     // -------------------------------------------------------------- worker ---
 
     async fn run(self: Arc<Self>, mut rx: UnboundedReceiver<Msg>) {
@@ -436,7 +452,10 @@ impl AlertService {
         let card = alert.card();
         let stamp = render::ist_stamp();
         match target {
-            Target::Telegram(chat) => channels::telegram(&self.http, chat, &card.telegram_html(&stamp), &card.plain()).await,
+            Target::Telegram(chat) => {
+                let markup = control::alert_markup(&cfg.telegram, chat, &alert.buttons);
+                channels::telegram_with(&self.http, chat, &card.telegram_html(&stamp), &card.plain(), markup.as_ref()).await
+            }
             Target::Email => {
                 channels::email(&cfg.email, &format!("[KISSA] {}", card.title), &card.plain(), &card.email_html(&stamp)).await
             }
@@ -624,6 +643,15 @@ mod tests {
         assert_eq!(card.fields, vec![("Account".to_string(), "Paper 1".to_string()), ("Qty".to_string(), "65".to_string())]);
         assert_eq!(a.plain_body(), "Account: Paper 1\nQty: 65\nOrder filled 65 of 130");
         assert_eq!(a.clone().icon("🎯").card().icon, "🎯");
+    }
+
+    #[test]
+    fn buttons_do_not_change_the_text() {
+        let plain = Alert::new(Kind::Risk, "k", "Kill switch ON", "body");
+        let with = plain.clone().buttons(vec![vec![control::btn_kill_off()]]);
+        assert_eq!(plain.plain_body(), with.plain_body());
+        assert!(plain.buttons.is_empty());
+        assert_eq!(with.buttons.len(), 1);
     }
 
     #[test]

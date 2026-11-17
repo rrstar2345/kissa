@@ -59,6 +59,8 @@ pub enum Actor {
     Algo,
     Copier,
     Broker,
+    /// A control button pressed in the Telegram bot.
+    Telegram,
 }
 
 impl Actor {
@@ -69,6 +71,7 @@ impl Actor {
             Actor::Algo => "algo",
             Actor::Copier => "copier",
             Actor::Broker => "broker",
+            Actor::Telegram => "telegram",
         }
     }
 }
