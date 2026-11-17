@@ -10,9 +10,16 @@
 //! Events: fills, rejections, risk halts and the kill switch, connection
 //! loss, token expiry reminders and the daily P&L summary. To add one: add a
 //! `Kind`, then call `notify` where it happens (see `trading::service::alerts`).
+//!
+//! An alert is a title, optional label / value `fields` and free text. The
+//! `render` module turns it into Telegram HTML, email HTML and plain text, so
+//! every event looks the same on every channel. `bot` is the Telegram side
+//! that listens (chat ID detection, read-only commands).
 
+pub mod bot;
 pub mod channels;
 pub mod config;
+pub mod render;
 pub mod store;
 
 use anyhow::{anyhow, Result};
@@ -28,6 +35,7 @@ use tracing::{debug, warn};
 
 use channels::Target;
 use config::{AlertConfig, SECRET_ACCOUNT, SMTP_PASSWORD, TELEGRAM_TOKEN};
+use render::Card;
 
 /// Delivery attempts per alert; the wait before attempt n+1 is `BACKOFF_SECS[n-1]`.
 const MAX_ATTEMPTS: usize = 3;
@@ -82,6 +90,36 @@ impl Kind {
         }
     }
 
+    /// Leading symbol of the message title.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Kind::Fill => "✅",
+            Kind::Rejection => "❌",
+            Kind::Risk => "🛑",
+            Kind::Connection => "📡",
+            Kind::TokenExpiry => "🔑",
+            Kind::DailySummary => "📊",
+            Kind::Copier => "🔁",
+            Kind::Algo => "🤖",
+            Kind::Api => "⚠️",
+            Kind::Test => "🔔",
+        }
+    }
+
+    /// Colour of the rule above an email's title.
+    pub fn accent(self) -> &'static str {
+        match self {
+            Kind::Fill => "#2e9e5b",
+            Kind::Rejection => "#d64545",
+            Kind::Risk => "#b42318",
+            Kind::Connection | Kind::TokenExpiry | Kind::Api => "#d99100",
+            Kind::DailySummary => "#2f6fdb",
+            Kind::Copier => "#7c5cd6",
+            Kind::Algo => "#1c8f8f",
+            Kind::Test => "#6b7280",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Kind::Fill => "Fills",
@@ -129,12 +167,43 @@ pub struct Alert {
     /// window is sent once.
     pub key: String,
     pub title: String,
+    /// Free text under the fields; one line per line of text.
     pub body: String,
+    /// Label / value rows shown first (account, quantity, price, ...). Blank values are dropped.
+    pub fields: Vec<(String, String)>,
+    /// Replaces the event's usual symbol, e.g. a target hit.
+    pub icon: Option<&'static str>,
 }
 
 impl Alert {
     pub fn new(kind: Kind, key: impl Into<String>, title: impl Into<String>, body: impl Into<String>) -> Self {
-        Self { kind, key: key.into(), title: title.into(), body: body.into() }
+        Self { kind, key: key.into(), title: title.into(), body: body.into(), fields: Vec::new(), icon: None }
+    }
+
+    /// Add a label / value row.
+    pub fn field(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+        self.fields.push((label.into(), value.into()));
+        self
+    }
+
+    pub fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// The message model the channels render. Values are capped here.
+    pub fn card(&self) -> Card {
+        let mut card = Card::new(self.icon.unwrap_or_else(|| self.kind.icon()), self.kind.accent(), self.kind.label(), &self.title);
+        for (label, value) in &self.fields {
+            card.add_field(label, value);
+        }
+        card.add_text(&self.body);
+        card
+    }
+
+    /// Fields and text without the title: what the history list stores.
+    pub fn plain_body(&self) -> String {
+        self.card().plain_body()
     }
 }
 
@@ -146,6 +215,10 @@ pub struct AlertSettings {
     pub events: Vec<EventInfo>,
     pub telegram_token_set: bool,
     pub smtp_password_set: bool,
+    /// The Telegram listener is receiving messages right now.
+    pub telegram_listening: bool,
+    /// Why it is not, when it should be (token rejected, bot used elsewhere, network).
+    pub telegram_listen_error: String,
 }
 
 // --------------------------------------------------------- token reminders ---
@@ -192,6 +265,8 @@ pub struct AlertService {
     tx: UnboundedSender<Msg>,
     config: RwLock<AlertConfig>,
     last_sent: Mutex<HashMap<String, Instant>>,
+    /// Telegram listener state (chat ID detection, status); see `bot`.
+    pub bot: Arc<bot::BotShared>,
 }
 
 impl AlertService {
@@ -200,7 +275,15 @@ impl AlertService {
         let cfg = config::load(&pool).await;
         let (tx, rx) = unbounded_channel();
         let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap_or_default();
-        let svc = Arc::new(Self { pool, app, http, tx, config: RwLock::new(cfg), last_sent: Mutex::new(HashMap::new()) });
+        let svc = Arc::new(Self {
+            pool,
+            app,
+            http,
+            tx,
+            config: RwLock::new(cfg),
+            last_sent: Mutex::new(HashMap::new()),
+            bot: bot::BotShared::new(),
+        });
         tauri::async_runtime::spawn(svc.clone().run(rx));
         svc
     }
@@ -315,7 +398,7 @@ impl AlertService {
             self.record(&alert, store::SKIPPED, "No channel is enabled and configured.").await;
             return;
         }
-        let id = match store::insert(&self.pool, kind, &alert.title, &alert.body, store::SENDING, "").await {
+        let id = match store::insert(&self.pool, kind, &alert.title, &alert.plain_body(), store::SENDING, "").await {
             Ok(id) => id,
             Err(e) => {
                 warn!("Could not record alert “{}”: {e}", alert.title);
@@ -343,23 +426,20 @@ impl AlertService {
     }
 
     async fn record(&self, alert: &Alert, status: &str, detail: &str) {
-        if let Err(e) = store::insert(&self.pool, alert.kind.as_str(), &alert.title, &alert.body, status, detail).await {
+        if let Err(e) = store::insert(&self.pool, alert.kind.as_str(), &alert.title, &alert.plain_body(), status, detail).await {
             warn!("Could not record alert “{}”: {e}", alert.title);
         }
         self.emit();
     }
 
     async fn send_one(&self, target: &Target, cfg: &AlertConfig, alert: &Alert) -> Result<(), String> {
+        let card = alert.card();
+        let stamp = render::ist_stamp();
         match target {
-            Target::Telegram(chat) => {
-                let text = if alert.body.is_empty() {
-                    format!("KISSA: {}", alert.title)
-                } else {
-                    format!("KISSA: {}\n{}", alert.title, alert.body)
-                };
-                channels::telegram(&self.http, chat, &text).await
+            Target::Telegram(chat) => channels::telegram(&self.http, chat, &card.telegram_html(&stamp), &card.plain()).await,
+            Target::Email => {
+                channels::email(&cfg.email, &format!("[KISSA] {}", card.title), &card.plain(), &card.email_html(&stamp)).await
             }
-            Target::Email => channels::email(&cfg.email, &format!("[KISSA] {}", alert.title), &alert.body).await,
         }
     }
 
@@ -419,6 +499,8 @@ impl AlertService {
                 .collect(),
             telegram_token_set: channels::secret_set(TELEGRAM_TOKEN),
             smtp_password_set: channels::secret_set(SMTP_PASSWORD),
+            telegram_listening: self.bot.status().listening,
+            telegram_listen_error: self.bot.status().error,
         }
     }
 
@@ -444,6 +526,8 @@ impl AlertService {
         if let Ok(mut c) = self.config.write() {
             *c = cfg;
         }
+        // The listener re-reads the settings (token, chat IDs, accept commands).
+        self.bot.wake.notify_one();
         Ok(self.settings().await)
     }
 
@@ -518,5 +602,34 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), Kind::EVENTS.len());
         assert!(Kind::EVENTS.iter().all(|k| !k.label().is_empty() && !k.description().is_empty()));
+    }
+
+    #[test]
+    fn every_event_has_an_icon_and_a_colour() {
+        for k in Kind::EVENTS.iter().chain([&Kind::Test]) {
+            assert!(!k.icon().is_empty(), "{k:?}");
+            assert!(k.accent().starts_with('#') && k.accent().len() == 7, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn alert_becomes_a_card() {
+        let a = Alert::new(Kind::Fill, "k", "Filled: BUY NIFTY 24000 CE 2026-11-24", "Order filled 65 of 130")
+            .field("Account", "Paper 1")
+            .field("Price", "")
+            .field("Qty", "65");
+        let card = a.card();
+        assert_eq!(card.icon, "✅");
+        assert_eq!(card.label, "Fills");
+        assert_eq!(card.fields, vec![("Account".to_string(), "Paper 1".to_string()), ("Qty".to_string(), "65".to_string())]);
+        assert_eq!(a.plain_body(), "Account: Paper 1\nQty: 65\nOrder filled 65 of 130");
+        assert_eq!(a.clone().icon("🎯").card().icon, "🎯");
+    }
+
+    #[test]
+    fn plain_alerts_keep_their_body_lines() {
+        let a = Alert::new(Kind::Algo, "k", "Algo entered: X", "Paper 1: BUY 65\nPaper 2: BUY 65\n");
+        assert_eq!(a.plain_body(), "Paper 1: BUY 65\nPaper 2: BUY 65");
+        assert_eq!(Alert::new(Kind::Connection, "k", "Connection restored: A", "").plain_body(), "");
     }
 }

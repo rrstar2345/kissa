@@ -134,6 +134,10 @@ pub fn run() {
             // Algos: evaluate armed algos on every bar close of their underlying.
             algo::runner::spawn(state.clone(), app.handle().clone());
 
+            // Telegram listener: chat ID detection and read-only commands. Idle
+            // (no network calls) unless the user turned them on.
+            alerts::bot::spawn(state.clone());
+
             // Exchange status (NSE, and Fyers when it is the data source): the
             // only code that calls the marketStatus APIs.
             market::status::spawn(state.clone());
@@ -325,6 +329,7 @@ pub fn run() {
             commands::get_alert_settings,
             commands::save_alert_settings,
             commands::test_alert,
+            commands::telegram_detect,
             commands::list_alert_history,
             commands::clear_alert_history,
             commands::list_audit,

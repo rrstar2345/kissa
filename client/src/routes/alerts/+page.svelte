@@ -2,7 +2,8 @@
   import { onMount, untrack } from 'svelte';
   import { api } from '$lib/api';
   import { trading } from '$lib/trading.svelte';
-  import type { AlertConfig, AlertRow, AlertSettings, TestResult } from '$lib/types';
+  import { every } from '$lib/timers';
+  import type { AlertConfig, AlertRow, AlertSettings, DetectState, TestResult } from '$lib/types';
 
   let settings = $state<AlertSettings | null>(null);
   let cfg = $state<AlertConfig | null>(null);
@@ -20,6 +21,11 @@
 
   let rows = $state<AlertRow[]>([]);
   let hideQuiet = $state(false);
+
+  // Chat ID detection: the backend listens for two minutes; this polls what it heard.
+  let detect = $state<DetectState | null>(null);
+  let detectErr = $state('');
+  let detectTimer: ReturnType<typeof setInterval> | null = null;
 
   const split = (t: string) =>
     t
@@ -59,6 +65,10 @@
   onMount(() => {
     load();
     loadHistory();
+    return () => {
+      stopTimer();
+      void api.telegramDetect('stop').catch(() => {});
+    };
   });
   $effect(() => {
     trading.alertVersion;
@@ -66,6 +76,60 @@
   });
 
   const isOn = (kind: string) => cfg?.events[kind] !== false;
+
+  function stopTimer() {
+    if (detectTimer) clearInterval(detectTimer);
+    detectTimer = null;
+  }
+
+  async function pollDetect() {
+    try {
+      detect = await api.telegramDetect('poll');
+      if (!detect.active) stopTimer();
+    } catch (e) {
+      detectErr = String(e);
+      stopTimer();
+    }
+  }
+
+  async function startDetect() {
+    detectErr = '';
+    try {
+      detect = await api.telegramDetect('start');
+      stopTimer();
+      detectTimer = every(pollDetect, 2000);
+    } catch (e) {
+      detectErr = String(e);
+    }
+  }
+
+  async function stopDetect() {
+    stopTimer();
+    try {
+      detect = await api.telegramDetect('stop');
+    } catch (e) {
+      detectErr = String(e);
+    }
+  }
+
+  const listed = (id: string) => split(chatText).includes(id);
+  function addChat(id: string) {
+    const ids = split(chatText);
+    if (!ids.includes(id)) chatText = [...ids, id].join('\n');
+  }
+
+  /** The listener needs a moment to start after a save: re-read only its status. */
+  async function refreshListener() {
+    try {
+      const s = await api.getAlertSettings();
+      if (settings) {
+        settings.telegramListening = s.telegramListening;
+        settings.telegramListenError = s.telegramListenError;
+      }
+    } catch {
+      /* the status line just stays as it was */
+    }
+  }
 
   async function save() {
     if (!cfg) return;
@@ -82,6 +146,7 @@
       c.dhanTokenHours = Math.max(0, Math.floor(Number(c.dhanTokenHours) || 0));
       apply(await api.saveAlertSettings(c, tokenInput.trim() || undefined, passInput.trim() || undefined));
       msg = { ok: true, message: 'Saved.' };
+      setTimeout(refreshListener, 2500);
     } catch (e) {
       msg = { ok: false, message: String(e) };
     } finally {
@@ -155,8 +220,9 @@
         </label>
       </div>
       <p class="text-xs text-base-content/60">
-        Create a bot with @BotFather and paste its token. Send your bot a message, then open
-        <span class="num">api.telegram.org/bot&lt;token&gt;/getUpdates</span> in a browser to read your chat ID.
+        Create a bot with @BotFather and paste its token, then save. Send your bot a message (for example /start) and
+        press <b>Detect chat ID</b> to add yourself. Messages are sent as formatted text; email carries the same
+        content as HTML.
       </p>
       <label class="flex flex-col gap-1">
         <span class="text-xs text-base-content/60">Bot token {settings.telegramTokenSet ? '(saved; leave blank to keep)' : ''}</span>
@@ -167,15 +233,72 @@
         <span class="text-xs text-base-content/60">Chat IDs (one per line, or comma-separated; groups are negative numbers)</span>
         <textarea class="textarea textarea-sm num w-full" rows="2" bind:value={chatText} placeholder="123456789"></textarea>
       </label>
+      <label class="flex cursor-pointer items-start gap-3">
+        <input type="checkbox" class="toggle toggle-sm toggle-primary mt-0.5" bind:checked={cfg.telegram.listen} />
+        <span class="flex flex-col">
+          <span class="text-sm font-medium">Answer commands</span>
+          <span class="text-xs text-base-content/60">
+            /positions, /pnl, /algos, /status and /help, in the chats above only. They only read: nothing can be
+            changed from Telegram. Anyone in those chats can see your positions and P&amp;L, and the app keeps a
+            connection to Telegram open while it runs.
+          </span>
+        </span>
+      </label>
+      {#if settings.config.telegram.enabled && settings.config.telegram.listen}
+        {#if settings.telegramListening}
+          <div class="text-xs text-success">Listening for commands.</div>
+        {:else if settings.telegramListenError}
+          <div class="text-xs break-words text-error">{settings.telegramListenError}</div>
+        {:else}
+          <div class="text-xs text-base-content/60">Starting to listen…</div>
+        {/if}
+      {/if}
       {#if testMsg.telegram}
         <div role="status" class="alert {testMsg.telegram.ok ? 'alert-success' : 'alert-error'} alert-soft py-2 text-sm break-words">{testMsg.telegram.message}</div>
       {/if}
-      <div class="flex items-center gap-2">
+      {#if detectErr}
+        <div role="alert" class="alert alert-error alert-soft py-2 text-sm break-words">{detectErr}</div>
+      {/if}
+      <div class="flex flex-wrap items-center gap-2">
         <button class="btn btn-outline btn-sm" onclick={() => test('telegram')} disabled={testing.telegram || dirty || !settings.telegramTokenSet}>
           {#if testing.telegram}<span class="loading loading-spinner loading-xs"></span>{/if} Send test
         </button>
-        {#if dirty}<span class="text-xs text-base-content/60">Save first: the test uses the saved settings.</span>{/if}
+        <button class="btn btn-outline btn-sm" onclick={startDetect} disabled={dirty || !settings.telegramTokenSet || detect?.active}>
+          {#if detect?.active}<span class="loading loading-spinner loading-xs"></span>{/if} Detect chat ID
+        </button>
+        {#if dirty}<span class="text-xs text-base-content/60">Save first: these use the saved settings.</span>{/if}
       </div>
+      {#if detect && (detect.active || detect.chats.length)}
+        <div class="flex flex-col gap-2 rounded-box border border-base-300 p-3">
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-base-content/60">
+              {#if detect.active}Listening for two minutes: send your bot a message now.{:else}Chats that wrote to the bot, newest first:{/if}
+            </span>
+            {#if detect.active}
+              <button class="btn btn-ghost btn-xs ml-auto" onclick={stopDetect}>Stop</button>
+            {/if}
+          </div>
+          {#if detect.error}<div class="text-xs break-words text-error">{detect.error}</div>{/if}
+          {#if !detect.chats.length}
+            <div class="text-xs text-base-content/60">Nothing yet.</div>
+          {:else}
+            <ul class="flex flex-col gap-1">
+              {#each detect.chats as c (c.id)}
+                <li class="flex flex-wrap items-center gap-2 text-sm">
+                  <span class="num">{c.id}</span>
+                  <span class="break-words">{c.name}</span>
+                  {#if c.username}<span class="text-xs text-base-content/60">@{c.username}</span>{/if}
+                  <span class="badge badge-ghost badge-sm">{c.kind}</span>
+                  <button class="btn btn-outline btn-xs ml-auto" onclick={() => addChat(c.id)} disabled={listed(c.id)}>
+                    {listed(c.id) ? 'Added' : 'Add'}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <p class="text-xs text-base-content/60">Add only chats you control, then press Save.</p>
+          {/if}
+        </div>
+      {/if}
     </section>
 
     <section class="flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-5">

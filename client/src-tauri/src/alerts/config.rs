@@ -21,6 +21,10 @@ pub struct TelegramConfig {
     pub enabled: bool,
     /// Numeric chat ids (users, groups) or `@channelname`.
     pub chat_ids: Vec<String>,
+    /// Listen for messages to the bot and answer the read-only commands
+    /// (`/positions`, `/pnl`, ...) in the chats above. Off by default: it keeps
+    /// a connection to Telegram open while the app runs.
+    pub listen: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

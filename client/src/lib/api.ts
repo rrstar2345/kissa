@@ -4,6 +4,7 @@ import type {
   AlertConfig,
   AlertRow,
   AlertSettings,
+  DetectState,
   AuditFilter,
   AuditRow,
   BackfillResult,
@@ -125,6 +126,8 @@ export const api = {
       smtpPassword: smtpPassword || null
     }),
   testAlert: (channel: 'telegram' | 'email') => invoke<TestResult>('test_alert', { channel }),
+  /** Chat ID detection: `start` listens for two minutes, `poll` reads what was heard, `stop` ends it. */
+  telegramDetect: (action: 'start' | 'poll' | 'stop') => invoke<DetectState>('telegram_detect', { action }),
   listAlertHistory: (limit = 200) => invoke<AlertRow[]>('list_alert_history', { limit }),
   clearAlertHistory: () => invoke<void>('clear_alert_history'),
   /** Audit journal, newest first; pass the last row's id as `beforeId` for the next page. */

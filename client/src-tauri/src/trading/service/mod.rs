@@ -336,16 +336,16 @@ impl TradingService {
                 Some(b) if o.role != super::ROLE_SETTLE => b.brokerage(&o, dp, dq).await,
                 _ => 0.0,
             };
-            {
+            let booked = {
                 let _guard = self.ledger.lock().await;
                 store::record_fill(
                     &self.pool,
                     &self.cfg().trading.charges,
                     Fill { order: &o, qty: dq, price: dp, brokerage, ext_id: Some(format!("{}:{}", o.id, filled)) },
                 )
-                .await?;
-            }
-            self.alert_fill(&o, dq, dp, filled).await;
+                .await?
+            };
+            self.alert_fill(&o, dq, dp, filled, booked.as_ref()).await;
             journal::fill(&o, dq, dp, filled);
             o.filled_qty = filled;
             o.avg_price = avg;

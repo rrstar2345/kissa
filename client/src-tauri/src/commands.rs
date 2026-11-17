@@ -2,7 +2,7 @@ use chrono::{NaiveDate, Timelike};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::alerts::{config::AlertConfig, store::AlertRow, AlertSettings};
+use crate::alerts::{bot::DetectState, config::AlertConfig, store::AlertRow, AlertSettings};
 use crate::audit::store::{self as audit_store, AuditFilter, AuditRow};
 use crate::audit::{self, events as audit_events, Actor, Category as AuditCategory, Entry};
 use crate::accounts::{self, Account, SaveAccountInput, TestResult};
@@ -944,6 +944,25 @@ pub async fn test_alert(channel: String, state: State<'_, SharedState>) -> Res<T
         Ok(message) => TestResult { ok: true, message },
         Err(e) => TestResult { ok: false, message: e.to_string() },
     })
+}
+
+/// Chat ID detection for the Alerts page. `start` begins listening for two
+/// minutes, `poll` reads what was heard, `stop` ends it. Needs a saved bot token.
+#[tauri::command]
+pub async fn telegram_detect(action: String, state: State<'_, SharedState>) -> Res<DetectState> {
+    let bot = &state.alerts.bot;
+    match action.as_str() {
+        "start" => {
+            if !crate::alerts::channels::secret_set(crate::alerts::config::TELEGRAM_TOKEN) {
+                return Err("Save the bot token first".into());
+            }
+            bot.start_detect();
+        }
+        "stop" => bot.stop_detect(),
+        "poll" => {}
+        other => return Err(format!("Unknown action: {other}")),
+    }
+    Ok(bot.detect_state())
 }
 
 #[tauri::command]

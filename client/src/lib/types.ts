@@ -690,6 +690,8 @@ export interface TelegramConfig {
   enabled: boolean;
   /** Numeric chat ids or @channelname */
   chatIds: string[];
+  /** Listen for messages to the bot and answer the read-only commands in the chats above */
+  listen: boolean;
 }
 
 export interface EmailConfig {
@@ -727,6 +729,28 @@ export interface AlertSettings {
   events: AlertEventInfo[];
   telegramTokenSet: boolean;
   smtpPasswordSet: boolean;
+  /** The Telegram listener is receiving messages right now */
+  telegramListening: boolean;
+  /** Why it is not, when it should be */
+  telegramListenError: string;
+}
+
+/** A chat that wrote to the bot (Detect chat ID). */
+export interface SeenChat {
+  /** Text: group ids are long negative numbers */
+  id: string;
+  kind: 'private' | 'group' | 'supergroup' | 'channel' | string;
+  name: string;
+  username: string;
+  /** Unix seconds of the last message */
+  lastSeen: number;
+}
+
+export interface DetectState {
+  active: boolean;
+  chats: SeenChat[];
+  listening: boolean;
+  error: string;
 }
 
 export interface AlertRow {
