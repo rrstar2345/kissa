@@ -66,6 +66,18 @@ pub async fn run(
         // (the option streams use `options_mode()` and wait for 9:15).
         let mode = session.mode().await;
 
+        // Headless with no armed algo: nothing needs the index feed (no connect, no seed poll).
+        if !crate::headless::indices_wanted() {
+            {
+                let mut s = stats.write().await;
+                s.ensure_stream(STREAM_NAME).state = ConnState::Idle;
+            }
+            quiet_runs = 0;
+            seed_attempts = 0;
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            continue;
+        }
+
         match mode {
             SessionMode::Active => {
                 seed_attempts = 0;
@@ -76,7 +88,16 @@ pub async fn run(
                 }
 
                 let ticks_before = super::ticks_received(&stats, STREAM_NAME).await;
-                match stream_active(&config, &stats, &session, &sink).await {
+                // Headless: drop the connection once no armed algo needs it any more.
+                let outcome = tokio::select! {
+                    r = stream_active(&config, &stats, &session, &sink) => Some(r),
+                    _ = crate::headless::indices_lost() => None,
+                };
+                let Some(outcome) = outcome else {
+                    info!("Indices stream stopped: no armed algo needs it");
+                    continue;
+                };
+                match outcome {
                     Ok(_) => info!("Indices stream closed gracefully"),
                     Err(e) => {
                         warn!("Indices stream error: {}", e);
@@ -119,7 +140,7 @@ pub async fn run(
                     // price has arrived yet), then wait for a status change. With Fyers
                     // as the data source NSE is not called at all, not even for this.
                     let have_prices = super::ticks_received(&stats, STREAM_NAME).await > 0;
-                    if session.nse_enabled() && !have_prices && seed_attempts < 3 {
+                    if session.nse_enabled() && !have_prices && seed_attempts < 3 && !crate::headless::is_headless() {
                         seed_attempts += 1;
                         if let Err(e) = poll_once(&config, &stats, &session, &sink).await {
                             debug!("Indices price seed error (market closed): {}", e);

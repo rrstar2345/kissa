@@ -640,26 +640,30 @@ pub fn spawn(state: SharedState) {
             let now = market_clock::get_ist_now();
             let source = state.market_status.source();
 
-            // NSE: only when it is the selected data source.
-            let cur = state.market_status.nse();
-            let next = next_status(&mut nse, source == DataSource::Nse, DataSource::Nse, now, &cur, || {
-                fetch_nse(&state.config)
-            })
-            .await;
-            if let Some(s) = next {
-                // Updates the streamers' mode first, then wakes anything waiting.
-                state.session.update_nse(s, inactive).await;
-            }
+            // Headless with nothing to watch (no armed algo, open leg, position or
+            // order): no status calls at all. A desktop always polls.
+            if crate::headless::feeds_wanted() {
+                // NSE: only when it is the selected data source.
+                let cur = state.market_status.nse();
+                let next = next_status(&mut nse, source == DataSource::Nse, DataSource::Nse, now, &cur, || {
+                    fetch_nse(&state.config)
+                })
+                .await;
+                if let Some(s) = next {
+                    // Updates the streamers' mode first, then wakes anything waiting.
+                    state.session.update_nse(s, inactive).await;
+                }
 
-            // Fyers: only when it is the selected data source.
-            let cur = state.market_status.fyers();
-            let next = next_status(&mut fyers, source == DataSource::Fyers, DataSource::Fyers, now, &cur, || async {
-                let creds = crate::commands::active_fyers_creds(&state).await?;
-                fetch_fyers(&state.config.fyers, &creds).await
-            })
-            .await;
-            if let Some(s) = next {
-                state.market_status.publish_fyers(s);
+                // Fyers: only when it is the selected data source.
+                let cur = state.market_status.fyers();
+                let next = next_status(&mut fyers, source == DataSource::Fyers, DataSource::Fyers, now, &cur, || async {
+                    let creds = crate::commands::active_fyers_creds(&state).await?;
+                    fetch_fyers(&state.config.fyers, &creds).await
+                })
+                .await;
+                if let Some(s) = next {
+                    state.market_status.publish_fyers(s);
+                }
             }
 
             // A change of data source does not wait for the next round.

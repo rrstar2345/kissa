@@ -164,18 +164,18 @@ pub fn spawn(state: SharedState, sink: IndexSink) {
         loop {
             tokio::select! {
                 _ = check.tick() => {
-                    let now = fyers_is_source(&state).await;
+                    let now = fyers_is_source(&state).await && crate::headless::indices_wanted();
                     if now != on {
                         on = now;
                         lease.set(if on { wanted.clone() } else { Vec::new() });
                         seed.reset();
                     }
-                    maybe_seed(&state, &sink, on, &mut seed).await;
+                    maybe_seed(&state, &sink, on && !crate::headless::is_headless(), &mut seed).await;
                 }
                 // A new login: seed from Fyers again, right away.
                 _ = hub.seed_wanted.notified() => {
                     seed.reset();
-                    maybe_seed(&state, &sink, on, &mut seed).await;
+                    maybe_seed(&state, &sink, on && !crate::headless::is_headless(), &mut seed).await;
                 }
                 t = rx.recv() => match t {
                     Ok(t) => {

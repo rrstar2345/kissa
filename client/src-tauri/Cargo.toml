@@ -25,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Async runtime / networking (ported from kstocks_egui)
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
 reqwest = { version = "0.12", features = ["json", "cookies"] }
 tokio-tungstenite = { version = "0.29.0", features = ["native-tls"] }
 futures = "0.3"
@@ -45,6 +45,9 @@ sha2 = "0.10"
 sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "chrono"] }
 # `bundled` compiles DuckDB from source (slow first build, needs a C++ toolchain; no system library).
 duckdb = { version = "1.20000", features = ["bundled"] }
+# Encrypted secrets file for machines without an OS keychain (headless servers)
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 async-trait = "0.1.92"
 

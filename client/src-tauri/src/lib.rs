@@ -9,6 +9,7 @@ mod charts;
 mod commands;
 mod db;
 mod emit_stats;
+mod headless;
 mod market;
 mod popout;
 mod secrets;
@@ -28,20 +29,32 @@ use state::{AppState, SharedState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kissa_lib=info".into()),
-        )
-        .init();
+    let args = headless::parse_args(std::env::args().skip(1));
+    if args.show_token {
+        // `kissa --show-control-token`: print the control API token and exit.
+        headless::set_mode(true);
+        match headless::control::control_token() {
+            Ok(t) => println!("{t}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    headless::set_mode(args.headless);
+    headless::init_logging(args.headless);
+    let control_port = args.control_port;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         // Native save dialog for the CSV export (shown from Rust, see `commands::export_csv`).
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(popout::on_window_event)
-        .setup(|app| {
+        .setup(move |app| {
             let paths = settings::setup_app_folders()?;
+            // One instance per data folder (desktop and headless alike).
+            headless::acquire_lock(&paths.root)?;
             let config = settings::load_or_create_config(&paths)?;
             info!("App root: {}", paths.root.display());
 
@@ -54,7 +67,11 @@ pub fn run() {
             audit::record(audit::Entry::new(
                 audit::Category::System,
                 "app_start",
-                format!("Kissa started (v{})", env!("CARGO_PKG_VERSION")),
+                format!(
+                    "Kissa started (v{}{})",
+                    env!("CARGO_PKG_VERSION"),
+                    if headless::is_headless() { ", headless" } else { "" }
+                ),
             ));
             let (ltp, ltp_rx) = trading::ltp::LtpStore::new();
             let alerts = tauri::async_runtime::block_on(alerts::AlertService::new(pool.clone(), app.handle().clone()));
@@ -99,8 +116,16 @@ pub fn run() {
                 fyers_api,
             });
             app.manage(state.clone());
-            // Pop-out windows left open last time.
-            popout::restore(app.handle().clone());
+            if headless::is_headless() {
+                info!("Headless mode: no window is created");
+            } else {
+                // The main window is not created from the config (`create: false`),
+                // so it is built here, once the state is managed.
+                let window = app.config().app.windows.first().cloned().ok_or("no window is configured")?;
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?.build()?;
+                // Pop-out windows left open last time.
+                popout::restore(app.handle().clone());
+            }
 
             // Orders: paper matching, Dhan live updates, and the background
             // price feed for open positions / pending paper orders.
@@ -121,7 +146,10 @@ pub fn run() {
                     // Decide the mode first (local clock until NSE time is known) so
                     // the streamers don't wait on a slow NSE time request to start.
                     session.tick(cfg.market_runtime.inactive_switch_after_secs).await;
-                    market_clock::refresh_if_stale(&cfg).await;
+                    // Headless with nothing to watch: no NSE time sync either.
+                    if headless::feeds_wanted() {
+                        market_clock::refresh_if_stale(&cfg).await;
+                    }
                     session.tick(cfg.market_runtime.inactive_switch_after_secs).await;
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
@@ -130,41 +158,45 @@ pub fn run() {
             // Debug only: `KISSA_EMIT_STATS=1` logs UI emits per second.
             emit_stats::spawn();
 
-            // Live prices: event-driven. The task sleeps until a price changes,
-            // waits 50 ms so a burst of ticks becomes one `quotes` event, and
-            // goes back to sleep. Nothing runs while the market is quiet.
-            let (quote_app, quote_ltp) = (app.handle().clone(), state.ltp.clone());
-            tauri::async_runtime::spawn(async move {
-                let wake = quote_ltp.ui_wake();
-                loop {
-                    wake.notified().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    let batch = quote_ltp.drain_changed();
-                    if !batch.is_empty() {
-                        emit_stats::count("quotes");
-                        let _ = quote_app.emit("quotes", batch);
+            // UI pushes (no window in headless mode, so nothing to push to).
+            if !headless::is_headless() {
+                // Live prices: event-driven. The task sleeps until a price changes,
+                // waits 50 ms so a burst of ticks becomes one `quotes` event, and
+                // goes back to sleep. Nothing runs while the market is quiet.
+                let (quote_app, quote_ltp) = (app.handle().clone(), state.ltp.clone());
+                tauri::async_runtime::spawn(async move {
+                    let wake = quote_ltp.ui_wake();
+                    loop {
+                        wake.notified().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        let batch = quote_ltp.drain_changed();
+                        if !batch.is_empty() {
+                            emit_stats::count("quotes");
+                            let _ = quote_app.emit("quotes", batch);
+                        }
                     }
-                }
-            });
+                });
 
-            // Market status: pushed only when something the UI shows changes
-            // (exchange state, mode, stream state). The UI keeps its own clock.
-            let (status_app, status_state) = (app.handle().clone(), state.clone());
-            tauri::async_runtime::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut last = String::new();
-                loop {
-                    tick.tick().await;
-                    let st = commands::build_market_status(&status_state).await;
-                    let key = st.change_key();
-                    if key != last {
-                        last = key;
-                        emit_stats::count("market-status");
-                        let _ = status_app.emit("market-status", &st);
+                // Market status: pushed only when something the UI shows changes
+                // (exchange state, mode, stream state). The UI keeps its own clock.
+                let (status_app, status_state) = (app.handle().clone(), state.clone());
+                tauri::async_runtime::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut last = String::new();
+                    loop {
+                        tick.tick().await;
+                        let st = commands::build_market_status(&status_state).await;
+                        let key = st.change_key();
+                        if key != last {
+                            last = key;
+                            emit_stats::count("market-status");
+                            let _ = status_app.emit("market-status", &st);
+                        }
                     }
-                }
-            });
+                });
+
+            }
 
             // Chart data: live bars are folded in memory and flushed to DuckDB.
             state.recorder.clone().spawn(app.handle().clone(), config.charts.flush_secs);
@@ -180,7 +212,7 @@ pub fn run() {
             // every 50 ms and sleeps when no index is moving.
             let index_wake = Arc::new(tokio::sync::Notify::new());
             let index_dirty: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Default::default();
-            {
+            if !headless::is_headless() {
                 let (wake, dirty, store, handle) =
                     (index_wake.clone(), index_dirty.clone(), store.clone(), handle.clone());
                 tauri::async_runtime::spawn(async move {
@@ -227,6 +259,15 @@ pub fn run() {
                 state.session.clone(),
                 sink,
             ));
+
+            // Headless: feeds on demand, clean shutdown, loopback control API.
+            if headless::is_headless() {
+                headless::spawn_demand(state.clone());
+                headless::spawn_signal_handler(state.clone(), app.handle().clone());
+                if let Some(port) = control_port {
+                    headless::control::spawn(state.clone(), app.handle().clone(), port);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -301,9 +342,17 @@ pub fn run() {
             popout::open_window,
             popout::set_window_title,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
             error!("error while running tauri application: {e}");
             std::process::exit(1);
+        })
+        .run(|_app, event| {
+            // Headless has no window, so nothing may end the run except the shutdown path.
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if headless::is_headless() && code.is_none() {
+                    api.prevent_exit();
+                }
+            }
         });
 }

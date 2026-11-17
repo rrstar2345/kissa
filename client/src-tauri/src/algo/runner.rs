@@ -21,7 +21,8 @@
 //! The first look after arming only sets the baseline bar, so a signal that
 //! was already on the chart never trades. Every decision goes to the journal;
 //! entries, exits, failures and disarming also go to the alert channels.
-//! The app must be running for any of this (there is no headless mode).
+//! The app must be running for any of this: on a desktop, or headless
+//! (`kissa --headless`, see `crate::headless`).
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate, Utc};
