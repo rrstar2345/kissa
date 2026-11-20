@@ -3,12 +3,14 @@
   import { api } from '$lib/api';
   import AccountForm from '$lib/components/AccountForm.svelte';
   import FyersLogin from '$lib/components/FyersLogin.svelte';
+  import CapitalLedger from '$lib/components/CapitalLedger.svelte';
   import type { Account, AccountKind, Source, TestResult } from '$lib/types';
 
   let accounts = $state<Account[]>([]);
   let loadError = $state('');
   let editing = $state<{ kind: AccountKind; account: Account | null } | null>(null);
   let loggingIn = $state<Account | null>(null);
+  let capitalFor = $state<Account | null>(null);
   let results = $state<Record<string, TestResult | 'testing'>>({});
   let source = $state<Source>('nse');
   let fyersId = $state('');
@@ -172,6 +174,9 @@
                     title={a.secretsSet.includes('appSecret') ? '' : 'Edit the account and enter the Secret ID first'}
                   >Log in</button>
                 {/if}
+                {#if a.kind === 'dhan'}
+                  <button class="btn btn-ghost btn-xs" onclick={() => (capitalFor = a)} title="Opening balance, deposits and withdrawals (used for the Dashboard ROI)">Capital</button>
+                {/if}
                 {#if a.kind !== 'paper'}
                   <button class="btn btn-ghost btn-xs" onclick={() => test(a)} disabled={results[a.id] === 'testing'}>
                     {#if results[a.id] === 'testing'}<span class="loading loading-spinner loading-xs"></span>{/if}
@@ -208,5 +213,16 @@
       {/key}
     </div>
     <button class="modal-backdrop" aria-label="Close" onclick={() => (loggingIn = null)}></button>
+  </dialog>
+{/if}
+
+{#if capitalFor}
+  <dialog class="modal modal-open">
+    <div class="modal-box max-w-xl">
+      {#key capitalFor.id}
+        <CapitalLedger account={capitalFor} onclose={() => (capitalFor = null)} />
+      {/key}
+    </div>
+    <button class="modal-backdrop" aria-label="Close" onclick={() => (capitalFor = null)}></button>
   </dialog>
 {/if}

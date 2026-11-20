@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Account,
+  CapitalEvent,
+  NewCapitalEvent,
   AlertConfig,
   AlertRow,
   AlertSettings,
@@ -140,6 +142,10 @@ export const api = {
   /** `anchor`: YYYY-MM-DD (daily) or YYYY-MM (monthly, yearly). */
   getPerformance: (view: DashView, anchor: string, accountId: string | null) =>
     invoke<Performance>('get_performance', { view, anchor, accountId }),
+  listCapitalEvents: (accountId: string | null) =>
+    invoke<CapitalEvent[]>('list_capital_events', { accountId }),
+  addCapitalEvent: (input: NewCapitalEvent) => invoke<CapitalEvent>('add_capital_event', { input }),
+  deleteCapitalEvent: (id: string) => invoke<void>('delete_capital_event', { id }),
   /** Folder dialog, then a backup of both databases; null when cancelled. */
   backupDatabases: () => invoke<BackupResult | null>('backup_databases'),
   exportCsv: (request: ExportRequest) => invoke<ExportResult>('export_csv', { request }),

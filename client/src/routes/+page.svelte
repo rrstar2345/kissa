@@ -185,7 +185,12 @@
         label: 'ROI',
         value: perf && perf.summary.roi !== null ? signed(perf.summary.roi) + '%' : '—',
         cls: trend(perf?.summary.roi),
-        hint: perf ? `on ₹${num(perf.summary.entryPremium, 0)} entry premium` : 'net / entry premium'
+        hint: !perf
+          ? 'net / opening balance'
+          : perf.summary.openingBalance === null
+            ? 'opening balance unknown: add capital under Accounts'
+            : `on ₹${num(perf.summary.openingBalance, 0)} opening balance` +
+              (perf.summary.roiExcluded.length ? ` (excl. ${perf.summary.roiExcluded.join(', ')})` : '')
       }
     ] as c (c.label)}
       <div class="card border border-base-300 bg-base-100">

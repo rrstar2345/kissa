@@ -7,8 +7,10 @@
 //! * **Trade** = one round trip: it starts when a position goes from flat to
 //!   held and ends when it is flat again. A fill that flips the position closes
 //!   one trade and opens the next. It counts when it closes.
-//! * **ROI** = net P&L / entry premium, the value (price x qty) of the fills
-//!   that opened or added to a position.
+//! * **ROI** = net P&L / opening balance of the period (see `capital`), per
+//!   account and summed over the accounts whose balance is known. The entry
+//!   premium (price x qty of the fills that opened or added to a position) is
+//!   still reported, but is no longer the denominator.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -274,8 +276,44 @@ pub struct Summary {
     pub trades: i64,
     pub fills: i64,
     pub entry_premium: f64,
-    /// Net / entry premium, percent. `None` without any entry.
+    /// Balance at the start of the period, summed over the accounts it is known for.
+    pub opening_balance: Option<f64>,
+    /// Net / opening balance, percent (only the accounts with a known balance
+    /// count on both sides). `None` when no balance is known.
     pub roi: Option<f64>,
+    /// Accounts with fills in the period but no known opening balance (left out of the ROI).
+    pub roi_excluded: Vec<String>,
+}
+
+/// What one account held at the start of a period (`balance` `None` = unknown).
+#[derive(Debug, Clone)]
+pub struct Opening {
+    pub account_id: String,
+    pub name: String,
+    pub balance: Option<f64>,
+}
+
+/// Opening balance, ROI and the accounts left out of it.
+/// `net_by_account` is the net P&L of the period per account (with fills).
+fn roi_of(openings: &[Opening], net_by_account: &HashMap<String, f64>) -> (Option<f64>, Option<f64>, Vec<String>) {
+    let (mut balance, mut net, mut known) = (0.0, 0.0, false);
+    let mut excluded = Vec::new();
+    for o in openings {
+        match o.balance.filter(|b| *b > 0.0) {
+            Some(b) => {
+                known = true;
+                balance += b;
+                net += net_by_account.get(&o.account_id).copied().unwrap_or(0.0);
+            }
+            None if net_by_account.contains_key(&o.account_id) => excluded.push(o.name.clone()),
+            None => {}
+        }
+    }
+    excluded.sort();
+    if !known {
+        return (None, None, excluded);
+    }
+    (Some(r2(balance)), Some(r2(net / balance * 100.0)), excluded)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -471,13 +509,15 @@ pub struct DatedTrip {
 }
 
 /// Pure part of the dashboard: `trades` oldest first (see
-/// `store::trades_for_window`), `orders` = (trade date, created at).
+/// `store::trades_for_window`), `orders` = (trade date, created at),
+/// `openings` = each account's balance at the start of the summary range.
 pub fn compute(
     view: View,
     anchor: &str,
     trades: &[TradeRow],
     orders: &[(String, String)],
     names: &HashMap<String, String>,
+    openings: &[Opening],
 ) -> Result<Performance> {
     let lay = layout(view, anchor)?;
     let win_from = iso(lay.cols.first().map(|c| c.from).unwrap_or(lay.sum_from));
@@ -487,12 +527,14 @@ pub fn compute(
     let mut by_day: HashMap<String, Agg> = HashMap::new();
     let mut by_hour: HashMap<(String, u32), Agg> = HashMap::new();
     let mut summary = Agg::default();
+    let mut by_account: HashMap<String, Agg> = HashMap::new();
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     for f in facts.iter().filter(|f| f.date >= win_from && f.date <= sum_to) {
         by_day.entry(f.date.clone()).or_default().add(f);
         by_hour.entry((f.date.clone(), f.hour)).or_default().add(f);
         if f.date >= sum_from {
             summary.add(f);
+            by_account.entry(f.account_id.clone()).or_default().add(f);
             let (key, label) = group_of(view, &f.date, f.hour);
             let g = groups.entry(key.clone()).or_insert_with(|| blank_group(key, label));
             g.trades += f.closed;
@@ -558,6 +600,8 @@ pub fn compute(
     }
 
     let net = summary.net();
+    let net_by_account: HashMap<String, f64> = by_account.iter().map(|(k, a)| (k.clone(), a.net())).collect();
+    let (opening_balance, roi, roi_excluded) = roi_of(openings, &net_by_account);
     Ok(Performance {
         view: match view {
             View::Daily => "daily",
@@ -574,7 +618,9 @@ pub fn compute(
             trades: summary.closed,
             fills: summary.fills,
             entry_premium: r2(summary.premium),
-            roi: (summary.premium > 0.0).then(|| r2(net / summary.premium * 100.0)),
+            opening_balance,
+            roi,
+            roi_excluded,
         },
         columns,
         groups,
@@ -595,7 +641,13 @@ pub async fn load(
     let to = iso(lay.sum_to);
     let trades = store::trades_for_window(pool, account, &from, &to).await?;
     let orders = store::order_times(pool, account, &iso(lay.sum_from), &to).await?;
-    compute(view, anchor, &trades, &orders, names)
+    let accts: Vec<_> = crate::accounts::list(pool)
+        .await?
+        .into_iter()
+        .filter(|a| (a.kind == "paper" || a.kind == "dhan") && account.map(|x| x == a.id).unwrap_or(true))
+        .collect();
+    let openings = super::capital::openings(pool, &accts, &iso(lay.sum_from)).await?;
+    compute(view, anchor, &trades, &orders, names, &openings)
 }
 
 #[cfg(test)]
@@ -695,9 +747,17 @@ mod tests {
             fill("4", "SELL", 10, 5.0, 0.0, 0.0, "2026-11-10", "2026-11-10T04:10:00Z"),
         ];
         let orders = vec![("2026-11-11".to_string(), "2026-11-11T04:00:00Z".to_string())];
-        let p = compute(View::Daily, "2026-11-11", &t, &orders, &HashMap::new()).unwrap();
+        let p = compute(View::Daily, "2026-11-11", &t, &orders, &HashMap::new(), &[]).unwrap();
         assert_eq!((p.summary.net, p.summary.gross, p.summary.charges, p.summary.trades), (980.0, 1000.0, 20.0, 1));
-        assert_eq!(p.summary.roi, Some(r2(980.0 / 5000.0 * 100.0)));
+        // no known balance: no ROI, and the account is reported as left out
+        assert_eq!((p.summary.roi, p.summary.opening_balance), (None, None));
+        assert_eq!(p.summary.roi_excluded, Vec::<String>::new()); // no openings listed at all
+        assert_eq!(p.summary.entry_premium, 5000.0);
+
+        let open = [Opening { account_id: "a".into(), name: "Paper".into(), balance: Some(98_000.0) }];
+        let p = compute(View::Daily, "2026-11-11", &t, &orders, &HashMap::new(), &open).unwrap();
+        assert_eq!(p.summary.opening_balance, Some(98_000.0));
+        assert_eq!(p.summary.roi, Some(1.0)); // 980 / 98,000
         let today = p.columns.last().unwrap();
         assert!(today.current && today.cells.len() == 24);
         assert_eq!(today.cells[9].state, "loss"); // entry charges only
@@ -709,6 +769,23 @@ mod tests {
         assert_eq!((p.groups[0].key.as_str(), p.groups[0].trades), ("11", 1)); // newest first
         assert_eq!(p.groups[1].orders, 1);
         assert_eq!(p.groups[0].rows.len(), 1);
+    }
+
+    #[test]
+    fn roi_uses_only_accounts_with_a_known_balance_and_names_the_rest() {
+        let op = |id: &str, b: Option<f64>| Opening { account_id: id.into(), name: id.to_uppercase(), balance: b };
+        let net = HashMap::from([("a".to_string(), 500.0), ("b".to_string(), -2000.0), ("c".to_string(), 700.0)]);
+        // a: 500 on 50,000; b unknown with activity -> excluded; d unknown without activity -> ignored
+        let (bal, roi, ex) = roi_of(&[op("a", Some(50_000.0)), op("b", None), op("d", None)], &net);
+        assert_eq!((bal, roi, ex), (Some(50_000.0), Some(1.0), vec!["B".to_string()]));
+        // two known accounts are summed: (500 + 700) / 100,000
+        let (bal, roi, _) = roi_of(&[op("a", Some(50_000.0)), op("c", Some(50_000.0))], &net);
+        assert_eq!((bal, roi), (Some(100_000.0), Some(1.2)));
+        // a zero balance is no balance
+        assert_eq!(roi_of(&[op("a", Some(0.0))], &net).1, None);
+        // nothing known
+        let (bal, roi, ex) = roi_of(&[op("b", None)], &net);
+        assert_eq!((bal, roi, ex.len()), (None, None, 1));
     }
 
     #[test]
@@ -741,7 +818,7 @@ mod tests {
             fill("1", "BUY", 100, 50.0, 0.0, 10.0, "2026-11-03", "2026-11-03T04:00:00Z"),
             fill("2", "SELL", 100, 40.0, -1000.0, 10.0, "2026-11-04", "2026-11-04T04:00:00Z"),
         ];
-        let p = compute(View::Monthly, "2026-11", &t, &[], &HashMap::new()).unwrap();
+        let p = compute(View::Monthly, "2026-11", &t, &[], &HashMap::new(), &[]).unwrap();
         let nov = p.columns.last().unwrap();
         assert_eq!((nov.lead_blank, nov.cells.len()), (6, 30)); // 1 Nov 2026 is a Sunday
         assert_eq!(nov.cells[2].state, "loss");

@@ -208,6 +208,7 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
         secrets::delete(id, f)?;
     }
     sqlx::query("DELETE FROM accounts WHERE id = ?").bind(id).execute(pool).await?;
+    sqlx::query("DELETE FROM capital_events WHERE account_id = ?").bind(id).execute(pool).await?;
     sqlx::query("DELETE FROM app_settings WHERE key IN (?, ?, ?)")
         .bind(format!("{TOKEN_SAVED_PREFIX}{id}"))
         .bind(format!("{TOKEN_NOTIFIED_PREFIX}{id}"))

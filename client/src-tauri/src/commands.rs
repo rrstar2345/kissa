@@ -601,6 +601,7 @@ pub async fn backfill_chart(
 // --------------------------------------------------------------- trading ---
 
 use crate::trading::export::ExportRequest;
+use crate::trading::capital::{self, Event as CapitalEvent, NewEvent as NewCapitalEvent};
 use crate::trading::period::{DatedTrip, Performance};
 use crate::trading::{ContractInfo, Dashboard, ExitAllResult, OrderRow, PlaceOrderInput, QuoteView, TradeRow};
 
@@ -654,6 +655,46 @@ pub async fn list_round_trips(
 #[tauri::command]
 pub async fn get_dashboard(account_id: Option<String>, state: State<'_, SharedState>) -> Res<Dashboard> {
     state.trading.dashboard(account_id.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn list_capital_events(account_id: Option<String>, state: State<'_, SharedState>) -> Res<Vec<CapitalEvent>> {
+    capital::list(&state.db, account_id.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn add_capital_event(input: NewCapitalEvent, state: State<'_, SharedState>) -> Res<CapitalEvent> {
+    let ev = capital::add(&state.db, input, &crate::trading::today_ist()).await.map_err(err)?;
+    audit::record(
+        Entry::new(
+            AuditCategory::Account,
+            "capital_added",
+            format!("Capital {}: ₹{:.2} on {}", ev.kind, ev.amount, ev.date),
+        )
+        .actor(Actor::User)
+        .account(ev.account_id.clone())
+        .subject(ev.id.clone()),
+    );
+    Ok(ev)
+}
+
+#[tauri::command]
+pub async fn delete_capital_event(id: String, state: State<'_, SharedState>) -> Res<()> {
+    let ev = capital::get(&state.db, &id).await.map_err(err)?;
+    capital::delete(&state.db, &id).await.map_err(err)?;
+    if let Some(ev) = ev {
+        audit::record(
+            Entry::new(
+                AuditCategory::Account,
+                "capital_deleted",
+                format!("Capital {} removed: ₹{:.2} on {}", ev.kind, ev.amount, ev.date),
+            )
+            .actor(Actor::User)
+            .account(ev.account_id)
+            .subject(id),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]

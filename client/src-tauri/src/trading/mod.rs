@@ -19,6 +19,7 @@
 //! order update and fill is written to SQLite here.
 
 pub mod broker;
+pub mod capital;
 pub mod charges;
 pub mod copier;
 pub mod export;

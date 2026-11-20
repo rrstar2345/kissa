@@ -567,8 +567,32 @@ export interface PerfSummary {
   trades: number;
   fills: number;
   entryPremium: number;
-  /** Net / entry premium, percent; null without any entry. */
+  /** Balance at the start of the period (accounts where it is known); null if unknown. */
+  openingBalance: number | null;
+  /** Net / opening balance, percent; null when no balance is known. */
   roi: number | null;
+  /** Accounts with fills but no known opening balance (left out of the ROI). */
+  roiExcluded: string[];
+}
+
+export type CapitalKind = 'opening' | 'deposit' | 'withdrawal';
+
+export interface CapitalEvent {
+  id: string;
+  accountId: string;
+  date: string;
+  kind: CapitalKind;
+  amount: number;
+  note: string;
+  createdAt: string;
+}
+
+export interface NewCapitalEvent {
+  accountId: string;
+  date: string;
+  kind: CapitalKind;
+  amount: number;
+  note: string;
 }
 
 export interface PerfCell {
